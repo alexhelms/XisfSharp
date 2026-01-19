@@ -10,6 +10,6 @@
     <File Path=".github/workflows/build-and-test.yml" />
     <File Path=".github/workflows/release.yml" />
   </Folder>
-  <Project Path="E:/source/XisfSharp/src/XisfSharp.Tests/XisfSharp.Tests.csproj" Id="28708445-97bf-4343-8b87-b057067f0872" />
-  <Project Path="E:/source/XisfSharp/src/XisfSharp/XisfSharp.csproj" />
+  <Project Path="src/XisfSharp.Tests/XisfSharp.Tests.csproj" Id="28708445-97bf-4343-8b87-b057067f0872" />
+  <Project Path="src/XisfSharp/XisfSharp.csproj" />
 </Solution>
