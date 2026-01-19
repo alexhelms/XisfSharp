@@ -1,0 +1,9 @@
+<Solution>
+  <Folder Name="/Solution Items/">
+    <File Path="src/Directory.Build.props" />
+    <File Path="src/Directory.Packages.props" />
+    <File Path="version.json" />
+  </Folder>
+  <Project Path="E:/source/XisfSharp/src/XisfSharp.Tests/XisfSharp.Tests.csproj" Id="28708445-97bf-4343-8b87-b057067f0872" />
+  <Project Path="E:/source/XisfSharp/src/XisfSharp/XisfSharp.csproj" />
+</Solution>

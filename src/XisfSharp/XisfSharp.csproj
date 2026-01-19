@@ -1,0 +1,41 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFrameworks>net8.0;net10.0</TargetFrameworks>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <Deterministic>true</Deterministic>
+    <ContinuousIntegrationBuild Condition="'$(CI)' == 'true'">true</ContinuousIntegrationBuild>
+
+    <!-- Nuget -->
+    <PackageId>XisfSharp</PackageId>
+    <Authors>Alex Helms</Authors>
+    <Copyright>Copyright (c) $([System.DateTime]::Now.Year) Alex Helms and Contributors</Copyright>
+    <PackageTags>XISF;PixInsight</PackageTags>
+    <Description>Read and write PixInsight XISF files.</Description>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+    <Title>XisfSharp</Title>
+    <RepositoryUrl>https://github.com/alexhelms/XisfSharp</RepositoryUrl>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="XisfSharp.Tests" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Include="README.md">
+      <Pack>True</Pack>
+      <PackagePath>\</PackagePath>
+    </None>
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="K4os.Compression.LZ4" />
+    <PackageReference Include="Nerdbank.GitVersioning">
+      <PrivateAssets>all</PrivateAssets>
+      <IncludeAssets>runtime; build; native; contentfiles; analyzers</IncludeAssets>
+    </PackageReference>
+    <PackageReference Include="ZstdSharp.Port" />
+  </ItemGroup>
+
+</Project>

@@ -1,0 +1,23 @@
+﻿<Project Sdk="MSTest.Sdk/4.0.2">
+
+  <PropertyGroup>
+    <TargetFrameworks>net8.0;net10.0</TargetFrameworks>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Shouldly" />
+    <PackageReference Include="K4os.Compression.LZ4" />
+    <PackageReference Include="ZstdSharp.Port" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\XisfSharp\XisfSharp.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Update="test-images\**\*">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+  </ItemGroup>
+
+</Project>
