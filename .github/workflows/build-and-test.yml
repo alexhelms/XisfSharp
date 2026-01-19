@@ -47,7 +47,7 @@ jobs:
     - name: Pack
       run: |
         dotnet pack --configuration Release --no-build --output ./artifacts
-        dotnet nuget push ./artifacts/*.nupkg --api-key $NUGET_AUTH_TOKEN --source https://api.nuget.org/v3/index.json
+        dotnet nuget push ./artifacts/*.nupkg --api-key "$NUGET_API_KEY" --source https://api.nuget.org/v3/index.json
 
     - name: Set release tag from ref
       if: github.event_name != 'workflow_dispatch'
