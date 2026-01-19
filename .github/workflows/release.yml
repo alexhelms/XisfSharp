@@ -1,0 +1,40 @@
+name: Build and Test
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+    - master
+    - release/*
+    - feature/*
+    - bug/*
+  pull_request:
+    branches:
+    - master
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    strategy:
+      matrix:
+        dotnet: ['8.0.x', '10.0.x']
+    name: Build for dotnet ${{ matrix.dotnet }}
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v6
+      with:
+        fetch-depth: 0
+
+    - name: Setup dotnet
+      uses: actions/setup-dotnet@v5
+      with:
+        cache: true
+        dotnet-version: ${{ matrix.dotnet }}
+
+    - name: Build
+      run: dotnet build --configuration Release
+
+    - name: Test
+      run: dotnet test --configuration Release --no-build
