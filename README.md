@@ -1,6 +1,6 @@
 # XisfSharp
 
-[![NuGet](https://img.shields.io/nuget/v/Stylet.svg)](https://www.nuget.org/packages/XisfSharp/)
+[![NuGet](https://img.shields.io/nuget/v/XisfSharp.svg)](https://www.nuget.org/packages/XisfSharp/)
 
 A .NET library for reading and writing XISF (Extensible Image Serialization Format) 
 files, commonly used in astrophotography applications like PixInsight and N.I.N.A.
