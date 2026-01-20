@@ -434,7 +434,7 @@ public sealed class XisfWriter : IDisposable, IAsyncDisposable
         var creationTimeElement = SerializeProperty(
             new XisfTimePointProperty("XISF:CreationTime", DateTimeOffset.UtcNow));
         var creatorElement = SerializeProperty(
-            new XisfStringProperty("XISF:CreatorApplication", "XisfSharp"));
+            new XisfStringProperty("XISF:CreatorModule", $"XisfSharp {ThisAssembly.AssemblyInformationalVersion}"));
 
         metadataElement.Add(creationTimeElement);
         metadataElement.Add(creatorElement);
