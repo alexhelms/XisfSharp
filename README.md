@@ -153,8 +153,8 @@ foreach (var keyword in image.FITSKeywords)
 ### Common XISF Property Namespaces
 ```csharp
 var dec = XisfScalarProperty.Create<double>(XisfNamespace.Observation.Center.Dec, 47.2661464);
-        var ra = XisfScalarProperty.Create<double>(XisfNamespace.Observation.Center.RA, 195.4997911);
-        var name = XisfStringProperty.Create(XisfNamespace.Observation.Object.Name, "NGC 1234");
+var ra = XisfScalarProperty.Create<double>(XisfNamespace.Observation.Center.RA, 195.4997911);
+var name = XisfStringProperty.Create(XisfNamespace.Observation.Object.Name, "NGC 1234");
 ```
 
 ### Image Metadata
@@ -192,7 +192,7 @@ await writer
 ReadOnlyMemory<byte> rawData = image.Data;
 
 // Cast to specific type
-var pixels = MemoryMarshal.Cast<byte, ushort>(image.Data.Span);
+ReadOnlySpan<ushort> pixels = MemoryMarshal.Cast<byte, ushort>(image.Data.Span);
 
 // Modify pixel data
 var newData = new float[width * height];
