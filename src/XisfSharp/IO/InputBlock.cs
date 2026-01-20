@@ -81,9 +81,13 @@ internal class InputBlock
             }
             else
             {
-                _data = new byte[AttachmentSize];
-                stream.Seek(AttachmentPosition, SeekOrigin.Begin);
-                await stream.ReadExactlyAsync(_data, cancellationToken);
+                // Empty block that has a "location" attribute
+                if (AttachmentSize > 0)
+                {
+                    _data = new byte[AttachmentSize];
+                    stream.Seek(AttachmentPosition, SeekOrigin.Begin);
+                    await stream.ReadExactlyAsync(_data, cancellationToken);
+                }
             }
         }
 

@@ -1,25 +1,55 @@
 ﻿using System.Buffers.Binary;
 using System.Globalization;
-using System.IO;
 using System.Xml;
 using System.Xml.Linq;
 using XisfSharp.FITS;
+using XisfSharp.IO;
 using XisfSharp.Properties;
 
-namespace XisfSharp.IO;
+namespace XisfSharp;
 
-public class XisfWriterOptions
+public record XisfWriterOptions
 {
-    public DataEncoding DataEncoding { get; set; }
+    /// <summary>
+    /// Get or set the data encoding used for embedded or inlined data.
+    /// Default is <see cref="DataEncoding.Base64"/>.
+    /// </summary>
+    public DataEncoding DataEncoding { get; set; } = DataEncoding.Base64;
 
-    public CompressionCodec CompressionCodec { get; set; }
+    /// <summary>
+    /// Get or set the compression codec.
+    /// Default is <see cref="CompressionCodec.None"/>.
+    /// </summary>
+    public CompressionCodec CompressionCodec { get; set; } = CompressionCodec.None;
 
+    /// <summary>
+    /// Get or set shuffling bytes.
+    /// This option does nothing is <see cref="CompressionCodec"/> is <see cref="CompressionCodec.None"/>.
+    /// When enabled, data is shuffled before compression to improve compression ratio.
+    /// </summary>
     public bool ShuffleBytes { get; set; }
 
-    public ChecksumAlgorithm ChecksumAlgorithm { get; set; }
+    /// <summary>
+    /// Get or set the checksum algorithm used.
+    /// Default is <see cref="ChecksumAlgorithm.None"/>.
+    /// </summary>
+    public ChecksumAlgorithm ChecksumAlgorithm { get; set; } = ChecksumAlgorithm.None;
+
+    /// <summary>
+    /// Gets or sets the inclusive lower bound for valid floating-point values, as required by the XISF spec.
+    /// </summary>
+    public double FloatingPointLowerBound { get; set; } = 0;
+
+    /// <summary>
+    /// Gets or sets the inclusive upper bound for valid floating-point values, as required by the XISF spec.
+    /// </summary>
+    public double FloatingPointUpperBound { get; set; } = 1;
 }
 
-internal sealed class XisfWriter : IDisposable, IAsyncDisposable
+/// <summary>
+/// Provides functionality to write XISF files.
+/// </summary>
+public sealed class XisfWriter : IDisposable, IAsyncDisposable
 {
     private const int AlignedBlockSize = 4096;
     private const int MaxInlineBlockSize = 3072;
@@ -31,17 +61,48 @@ internal sealed class XisfWriter : IDisposable, IAsyncDisposable
 
     private readonly List<XisfImage> _images = [];
     private readonly List<OutputBlock> _blocks = [];
+    private readonly XisfPropertyCollection _properties = [];
 
     private bool _disposed;
     private byte[] _header = [];
 
     internal string XmlText { get; private set; } = string.Empty;
 
+    /// <summary>
+    /// Create a new <see cref="XisfWriter"/> that writes to the specified file path.
+    /// </summary>
+    /// <param name="filePath">The path to the XISF file to write.</param>
+    public XisfWriter(string filePath)
+        : this(File.OpenWrite(filePath))
+    {
+    }
+
+    /// <summary>
+    /// Create a new <see cref="XisfWriter"/> that writes to the specified file path with custom options.
+    /// </summary>
+    /// <param name="filePath">The path to the XISF file to write.</param>
+    /// <param name="options">The options to use when writing the XISF file.</param>
+    public XisfWriter(string filePath, XisfWriterOptions options)
+        : this(File.OpenWrite(filePath), options)
+    {
+    }
+
+    /// <summary>
+    /// Create a new <see cref="XisfWriter"/> that writes to the specified stream.
+    /// </summary>
+    /// <param name="stream">The stream to write XISF data to. Must be writable.</param>
+    /// <param name="leaveOpen">If true, the stream is left open after the writer is disposed; otherwise, the stream is disposed.</param>
     public XisfWriter(Stream stream, bool leaveOpen = false)
         : this(stream, new XisfWriterOptions(), leaveOpen)
     {
     }
 
+    /// <summary>
+    /// Create a new <see cref="XisfWriter"/> that writes to the specified stream with custom options.
+    /// </summary>
+    /// <param name="stream">The stream to write XISF data to. Must be writable.</param>
+    /// <param name="options">The options to use when writing the XISF file.</param>
+    /// <param name="leaveOpen">If true, the stream is left open after the writer is disposed; otherwise, the stream is disposed.</param>
     public XisfWriter(Stream stream, XisfWriterOptions options, bool leaveOpen = false)
     {
         ArgumentNullException.ThrowIfNull(stream);
@@ -80,6 +141,52 @@ internal sealed class XisfWriter : IDisposable, IAsyncDisposable
         _disposed = true;
     }
 
+    /// <summary>
+    /// Asynchronously writes a single image to the specified file path.
+    /// </summary>
+    /// <param name="path">The path where the XISF file will be saved.</param>
+    /// <param name="image">The image to write.</param>
+    /// <param name="cancellationToken">A token to monitor for cancellation requests.</param>
+    /// <returns>A task that represents the asynchronous write operation.</returns>
+    public static Task WriteAsync(string path, XisfImage image, CancellationToken cancellationToken = default)
+    {
+        return WriteAsync(path, [image], new XisfWriterOptions(), cancellationToken);
+    }
+
+    /// <summary>
+    /// Asynchronously writes multiple images to the specified file path.
+    /// </summary>
+    /// <param name="path">The path where the XISF file will be saved.</param>
+    /// <param name="images">The collection of images to write.</param>
+    /// <param name="cancellationToken">A token to monitor for cancellation requests.</param>
+    /// <returns>A task that represents the asynchronous write operation.</returns>
+    public static Task WriteAsync(string path, IEnumerable<XisfImage> images, CancellationToken cancellationToken = default)
+    {
+        return WriteAsync(path, images, new XisfWriterOptions(), cancellationToken);
+    }
+
+    /// <summary>
+    /// Asynchronously writes multiple images to the specified file path with custom options.
+    /// </summary>
+    /// <param name="path">The path where the XISF file will be saved.</param>
+    /// <param name="images">The collection of images to write.</param>
+    /// <param name="options">The options to use when writing the XISF file.</param>
+    /// <param name="cancellationToken">A token to monitor for cancellation requests.</param>
+    /// <returns>A task that represents the asynchronous write operation.</returns>
+    public static async Task WriteAsync(string path, IEnumerable<XisfImage> images, XisfWriterOptions options, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(path);
+        ArgumentNullException.ThrowIfNull(options);
+
+        await using var writer = new XisfWriter(path, options);
+        writer.AddImages(images);
+        await writer.SaveAsync(cancellationToken);
+    }
+
+    /// <summary>
+    /// Adds an image to be written to the XISF file.
+    /// </summary>
+    /// <param name="image">The image to add.</param>
     public void AddImage(XisfImage image)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
@@ -87,6 +194,111 @@ internal sealed class XisfWriter : IDisposable, IAsyncDisposable
         _images.Add(image);
     }
 
+    /// <summary>
+    /// Adds multiple images to be written to the XISF file.
+    /// </summary>
+    /// <param name="images">The collection of images to add.</param>
+    public void AddImages(params IEnumerable<XisfImage> images)
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+
+        _images.AddRange(images);
+    }
+
+    /// <summary>
+    /// Adds a global property to the XISF file metadata.
+    /// </summary>
+    /// <param name="property">The property to add.</param>
+    public void AddProperty(XisfProperty property)
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+
+        _properties.Add(property);
+    }
+
+    /// <summary>
+    /// Adds multiple global properties to the XISF file metadata.
+    /// </summary>
+    /// <param name="properties">The collection of properties to add.</param>
+    public void AddProperties(params IEnumerable<XisfProperty> properties)
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+
+        foreach (var property in properties)
+        {
+            AddProperty(property);
+        }
+    }
+
+    /// <summary>
+    /// Adds an image to be written to the XISF file and returns the writer for method chaining.
+    /// </summary>
+    /// <param name="image">The image to add.</param>
+    /// <returns>This <see cref="XisfWriter"/> instance for fluent syntax.</returns>
+    public XisfWriter WithImage(XisfImage image)
+    {
+        AddImage(image);
+        return this;
+    }
+
+    /// <summary>
+    /// Adds the image and associated properties to the writer and returns the writer for method chaining.
+    /// </summary>
+    /// <param name="image">The image to add to the writer. Cannot be null.</param>
+    /// <param name="imageProperties">A collection of properties to associate with the image. Properties with duplicate identifiers are ignored.</param>
+    /// <returns>This <see cref="XisfWriter"/> instance for fluent syntax.</returns>
+    public XisfWriter WithImage(XisfImage image, params IEnumerable<XisfProperty> imageProperties)
+    {
+        foreach (var property in imageProperties)
+        {
+            if (image.Properties.ContainsId(property.Id))
+                continue;
+
+            image.Properties.Add(property);
+        }
+
+        AddImage(image);
+        return this;
+    }
+
+    /// <summary>
+    /// Adds multiple images to be written to the XISF file and returns the writer for method chaining.
+    /// </summary>
+    /// <param name="images">The collection of images to add.</param>
+    /// <returns>This <see cref="XisfWriter"/> instance for fluent syntax.</returns>
+    public XisfWriter WithImages(params IEnumerable<XisfImage> images)
+    {
+        AddImages(images);
+        return this;
+    }
+
+    /// <summary>
+    /// Adds a global property to the XISF file metadata and returns the writer for method chaining.
+    /// </summary>
+    /// <param name="property">The property to add.</param>
+    /// <returns>This <see cref="XisfWriter"/> instance for fluent syntax.</returns>
+    public XisfWriter WithProperty(XisfProperty property)
+    {
+        AddProperty(property);
+        return this;
+    }
+
+    /// <summary>
+    /// Adds multiple global properties to the XISF file metadata and returns the writer for method chaining.
+    /// </summary>
+    /// <param name="properties">The collection of properties to add.</param>
+    /// <returns>This <see cref="XisfWriter"/> instance for fluent syntax.</returns>
+    public XisfWriter WithProperties(params IEnumerable<XisfProperty> properties)
+    {
+        AddProperties(properties);
+        return this;
+    }
+
+    /// <summary>
+    /// Asynchronously writes all added images and properties to the XISF file.
+    /// </summary>
+    /// <param name="cancellationToken">A token to monitor for cancellation requests.</param>
+    /// <returns>A task that represents the asynchronous save operation.</returns>
     public async Task SaveAsync(CancellationToken cancellationToken = default)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
@@ -227,6 +439,12 @@ internal sealed class XisfWriter : IDisposable, IAsyncDisposable
         metadataElement.Add(creationTimeElement);
         metadataElement.Add(creatorElement);
 
+        foreach (var property in _properties)
+        {
+            var propertyElement = SerializeProperty(property);
+            metadataElement.Add(propertyElement);
+        }
+
         root.Add(metadataElement);
     }
 
@@ -266,13 +484,27 @@ internal sealed class XisfWriter : IDisposable, IAsyncDisposable
 
         root.Add(imageElement);
 
-        static void AppendBounds(XElement imageElement, XisfImage image)
+        void AppendBounds(XElement imageElement, XisfImage image)
         {
             var sampleFormat = image.SampleFormat;
             var bounds = image.Bounds;
 
-            if (sampleFormat is SampleFormat.Float32 or SampleFormat.Float64 &&
-                bounds.HasValue)
+            if (bounds is null)
+            {
+                if (sampleFormat is SampleFormat.Float32 or SampleFormat.Float64)
+                {
+                    var lower = _options.FloatingPointLowerBound;
+                    var upper = _options.FloatingPointUpperBound;
+                    if (lower > upper)
+                    {
+                        lower = _options.FloatingPointUpperBound;
+                        upper = _options.FloatingPointLowerBound;
+                    }
+                    bounds = new SampleBounds(lower, upper);
+                }
+            }
+
+            if (bounds is not null)
             {
                 imageElement.Add(new XAttribute("bounds", $"{bounds.Value.Lower}:{bounds.Value.Upper}"));
             }
@@ -451,8 +683,9 @@ internal sealed class XisfWriter : IDisposable, IAsyncDisposable
                 var dataElement = new XElement(_ns + "Data");
                 WriteCompressionAttribute(dataElement, block);
                 WriteChecksumAttribute(dataElement, block);
-                dataElement.Add(new XAttribute("encoding", dataElement.ToString().ToLowerInvariant()));
+                dataElement.Add(new XAttribute("encoding", dataEncoding.ToString().ToLowerInvariant()));
                 dataElement.Add(block.GetEncodedData(dataEncoding));
+                element.Add(dataElement);
             }
         }
         else

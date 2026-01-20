@@ -80,6 +80,7 @@ public class XisfPropertyEdgeCaseTests
 
         var image = await TestHelpers.WriteAndReadImage(originalImage);
 
+        image.Properties.Count.ShouldBe(1);
         image.Properties[0].Value.ShouldBe(Array.Empty<int>());
         ((XisfVectorProperty)image.Properties[0]).Length.ShouldBe(0);
     }
@@ -92,6 +93,7 @@ public class XisfPropertyEdgeCaseTests
 
         var image = await TestHelpers.WriteAndReadImage(originalImage);
 
+        image.Properties.Count.ShouldBe(1);
         image.Properties[0].Value.ShouldBe(Array.Empty<double>());
         ((XisfMatrixProperty)image.Properties[0]).Rows.ShouldBe(0);
         ((XisfMatrixProperty)image.Properties[0]).Columns.ShouldBe(0);

@@ -55,7 +55,7 @@ public class XisfPropertyValidationTests
         using var stream = TestHelpers.CreateEmptyXisfStream(properties);
         using var reader = new XisfReader(stream);
         
-        await reader.ReadAsync();
+        await reader.ReadHeaderAsync();
 
         reader.Properties.Count.ShouldBe(1);
         reader.Properties[0].Value.ShouldBe("Property 2 content");
@@ -71,7 +71,7 @@ public class XisfPropertyValidationTests
         using var stream = TestHelpers.CreateXisfStreamWith40x30Image(properties);
         using var reader = new XisfReader(stream);
 
-        await reader.ReadAsync();
+        await reader.ReadHeaderAsync();
         var image = await reader.ReadImageAsync(0);
 
         image.Properties.Count.ShouldBe(1);

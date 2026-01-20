@@ -31,8 +31,8 @@ public static class TestHelpers
             xisfData = ms.ToArray();
         }
 
-        using var reader = new XisfReader(xisfData);
-        await reader.ReadAsync();
+        using var reader = new XisfReader(new MemoryStream(xisfData));
+        await reader.ReadHeaderAsync();
         var outputImage = await reader.ReadImageAsync(0);
         return (outputImage, reader.XmlText);
     }

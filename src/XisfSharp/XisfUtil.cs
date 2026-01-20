@@ -8,6 +8,21 @@ namespace XisfSharp;
 
 internal static class XisfUtil
 {
+    internal static SampleFormat ToSampleFormat<T>()
+        where T : unmanaged
+    {
+        return typeof(T) switch
+        {
+            var t when t == typeof(byte) => SampleFormat.UInt8,
+            var t when t == typeof(ushort) => SampleFormat.UInt16,
+            var t when t == typeof(uint) => SampleFormat.UInt32,
+            var t when t == typeof(ulong) => SampleFormat.UInt64,
+            var t when t == typeof(float) => SampleFormat.Float32,
+            var t when t == typeof(double) => SampleFormat.Float64,
+            _ => throw new XisfException($"Unsupported type: {typeof(T).FullName}")
+        };
+    }
+
     internal static int SampleFormatSize(SampleFormat sampleFormat)
     {
         return sampleFormat switch
@@ -221,6 +236,7 @@ internal static class XisfUtil
             case CompressionCodec.Zstd:
                 using (var zstd = new Compressor())
                 {
+                    zstd.SetParameter(ZstdSharp.Unsafe.ZSTD_cParameter.ZSTD_c_nbWorkers, Environment.ProcessorCount);
                     output = zstd.Wrap(input).ToArray();
                 }
                 break;

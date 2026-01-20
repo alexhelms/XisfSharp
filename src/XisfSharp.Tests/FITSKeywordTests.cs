@@ -32,7 +32,7 @@ public class FITSKeywordTests
         
         using var stream = TestHelpers.CreateXisfStreamWith40x30Image(properties);
         using var reader = new XisfReader(stream);
-        await reader.ReadAsync();
+        await reader.ReadHeaderAsync();
         var image = await reader.ReadImageAsync(0);
 
         image.FITSKeywords.Count.ShouldBe(1);

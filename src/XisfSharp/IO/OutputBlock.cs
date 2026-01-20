@@ -62,14 +62,14 @@ internal class OutputBlock(ReadOnlyMemory<byte> data)
         {
             if (encoding == DataEncoding.Base64)
             {
-                return Convert.ToBase64String(_data.Span);
+                return Convert.ToBase64String(data);
             }
             else if (encoding == DataEncoding.Base16)
             {
 #if NET10_0_OR_GREATER
-                return Convert.ToHexStringLower(_data.Span);
+                return Convert.ToHexStringLower(data);
 #else
-                return Convert.ToHexString(_data.Span).ToLowerInvariant();
+                return Convert.ToHexString(data).ToLowerInvariant();
 #endif
             }
         }

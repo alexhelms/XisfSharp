@@ -1,15 +1,24 @@
 ﻿using System.Diagnostics;
-using System.Runtime.CompilerServices;
+using System.Runtime.InteropServices;
 
 namespace XisfSharp.Properties;
 
 [DebuggerDisplay("{Id} = {Value}")]
 public sealed class XisfVectorProperty : XisfProperty
 {
+    /// <summary>
+    /// Gets the array of elements in the vector.
+    /// </summary>
     public Array Elements { get; }
 
+    /// <summary>
+    /// Gets the value of the property.
+    /// </summary>
     public override object Value => Elements;
 
+    /// <summary>
+    /// Gets the number of elements in the vector.
+    /// </summary>
     public int Length => Elements.Length;
 
     public override string ToString()
@@ -17,16 +26,37 @@ public sealed class XisfVectorProperty : XisfProperty
         return $"Vector<{Type}> of {Elements.Length} elements";
     }
 
+    /// <summary>
+    /// Create a new <see cref="XisfVectorProperty"/>.
+    /// </summary>
+    /// <param name="id">The unique identifier for the property.</param>
+    /// <param name="type">The vector type of the property value.</param>
+    /// <param name="elements">The rank 1 array of vector elements. Cannot be null.</param>
     public XisfVectorProperty(string id, XisfPropertyType type, Array elements)
         : this(id, type, elements, null, null)
     {
     }
 
+    /// <summary>
+    /// Create a new <see cref="XisfVectorProperty"/>.
+    /// </summary>
+    /// <param name="id">The unique identifier for the property.</param>
+    /// <param name="type">The vector type of the property value.</param>
+    /// <param name="elements">The rank 1 array of vector elements. Cannot be null.</param>
+    /// <param name="comment">An optional comment describing the property.</param>
     public XisfVectorProperty(string id, XisfPropertyType type, Array elements, string? comment)
         : this(id, type, elements, comment, null)
     { 
     }
 
+    /// <summary>
+    /// Create a new <see cref="XisfVectorProperty"/>.
+    /// </summary>
+    /// <param name="id">The unique identifier for the property.</param>
+    /// <param name="type">The vector type of the property value.</param>
+    /// <param name="elements">The rank 1 array of vector elements. Cannot be null.</param>
+    /// <param name="comment">An optional comment describing the property.</param>
+    /// <param name="format">An optional format hint for the property value.</param>
     public XisfVectorProperty(
         string id,
         XisfPropertyType type,
@@ -52,9 +82,14 @@ public sealed class XisfVectorProperty : XisfProperty
         Elements = elements;
     }
 
-    public T[] GetElements<T>() where T : struct => (T[])Elements;
+    /// <summary>
+    /// Gets the vector elements as a strongly-typed array.
+    /// </summary>
+    /// <typeparam name="T">The unmanaged type of the vector elements.</typeparam>
+    /// <returns>The vector elements cast to the specified type.</returns>
+    public T[] GetElements<T>() where T : unmanaged => (T[])Elements;
 
-    public byte[] GetBytes()
+    internal byte[] GetBytes()
     {
         return Type switch
         {
@@ -73,23 +108,39 @@ public sealed class XisfVectorProperty : XisfProperty
     }
 
     private static byte[] GetBytesFromArray<T>(T[] array)
-        where T : struct
+        where T : unmanaged
     {
-        var bytes = new byte[array.Length * Unsafe.SizeOf<T>()];
-        Buffer.BlockCopy(array, 0, bytes, 0, bytes.Length);
-        return bytes;
+        return MemoryMarshal.AsBytes(array).ToArray();
     }
 
+    /// <summary>
+    /// Create a new <see cref="XisfVectorProperty"/> from a strongly-typed array.
+    /// </summary>
+    /// <param name="id">The unique identifier for the property.</param>
+    /// <param name="elements">The rank 1 array of vector elements. Cannot be null.</param>
     public static XisfVectorProperty Create<T>(string id, T[] elements)
-        where T : struct
+        where T : unmanaged
         => Create(id, elements, null, null);
 
+    /// <summary>
+    /// Create a new <see cref="XisfVectorProperty"/> from a strongly-typed array.
+    /// </summary>
+    /// <param name="id">The unique identifier for the property.</param>
+    /// <param name="elements">The rank 1 array of vector elements. Cannot be null.</param>
+    /// <param name="comment">An optional comment describing the property.</param>
     public static XisfVectorProperty Create<T>(string id, T[] elements, string? comment)
-        where T : struct
+        where T : unmanaged
         => Create(id, elements, comment, null);
 
+    /// <summary>
+    /// Create a new <see cref="XisfVectorProperty"/> from a strongly-typed array.
+    /// </summary>
+    /// <param name="id">The unique identifier for the property.</param>
+    /// <param name="elements">The rank 1 array of vector elements. Cannot be null.</param>
+    /// <param name="comment">An optional comment describing the property.</param>
+    /// <param name="format">An optional format hint for the property value.</param>
     public static XisfVectorProperty Create<T>(string id, T[] elements, string? comment, string? format)
-        where T : struct
+        where T : unmanaged
     {
         var type = typeof(T) switch
         {

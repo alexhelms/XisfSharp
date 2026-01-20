@@ -1,25 +1,72 @@
 ﻿using System.Globalization;
+using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using System.Xml;
 using System.Xml.Linq;
 using XisfSharp.FITS;
+using XisfSharp.IO;
 using XisfSharp.Properties;
 
-namespace XisfSharp.IO;
+namespace XisfSharp;
 
-internal sealed class XisfReader : IDisposable, IAsyncDisposable
+/// <summary>
+/// Provides functionality to read and parse XISF files.
+/// </summary>
+public sealed class XisfReader : IDisposable, IAsyncDisposable
 {
     private readonly Stream _stream;
     private readonly bool _leaveOpen;
 
     private XNamespace _ns = XNamespace.None;
     private bool _disposed;
+    private bool _headerRead;
     private long _minBlockPosition;
     private List<XisfImage> _images = [];
     private XisfPropertyCollection _properties = [];
 
+    /// <summary>
+    /// Gets the read-only list of images in the XISF file.
+    /// </summary>
+    public IReadOnlyList<XisfImage> Images => _images;
+
+    /// <summary>
+    /// Gets the read-only collection of global properties in the XISF file.
+    /// </summary>
+    public ReadOnlyXisfPropertyCollection Properties => new(_properties);
+
+    /// <summary>
+    /// Gets or sets a value indicating whether the parser should throw exceptions on parsing failures.
+    /// </summary>
+    /// <remarks>If this property is set to <see langword="true"/>, the parser will throw an exception when it
+    /// encounters invalid input. If set to <see langword="false"/>, the parser will handle failed parses without
+    /// throwing and may return a default value.</remarks>
+    public bool ThrowOnParsingFailure { get; set; }
+
+    /// <summary>
+    /// Gets or sets a log handler to invoke when a warning or error occurs.
+    /// </summary>
+    public Action<string, Exception?>? LogHandler { get; set; }
+
+    internal string XmlText { get; private set; } = string.Empty;
+
+    /// <summary>
+    /// Create a new <see cref="XisfReader"/> from the specified file path.
+    /// </summary>
+    /// <param name="filePath">The path to the XISF file to read.</param>
+    public XisfReader(string filePath)
+        : this(File.OpenRead(filePath))
+    {
+    }
+
+    /// <summary>
+    /// Initializes a new instance of the <see cref="XisfReader"/> class from a stream.
+    /// </summary>
+    /// <param name="stream">The stream containing XISF data. Must be readable and seekable.</param>
+    /// <param name="leaveOpen">If true, the stream is left open after the reader is disposed; otherwise, the stream is disposed.</param>
     public XisfReader(Stream stream, bool leaveOpen = false)
     {
+        ArgumentNullException.ThrowIfNull(stream);
+
         if (!stream.CanRead)
             throw new ArgumentException("Stream must be readable.", nameof(stream));
 
@@ -28,11 +75,6 @@ internal sealed class XisfReader : IDisposable, IAsyncDisposable
 
         _stream = stream;
         _leaveOpen = leaveOpen;
-    }
-
-    public XisfReader(byte[] data)
-        : this(new MemoryStream(data))
-    {
     }
 
     public void Dispose()
@@ -61,14 +103,63 @@ internal sealed class XisfReader : IDisposable, IAsyncDisposable
         _disposed = true;
     }
 
-    public IReadOnlyList<XisfImage> Images => _images;
-    public XisfPropertyCollection Properties => _properties;
+    private void LogError(string message, Exception e)
+    {
+        LogHandler?.Invoke($"{message} : {e.Message}", e);
+    }
 
-    internal string XmlText { get; private set; } = string.Empty;
+    private void Log(string message)
+    {
+        LogHandler?.Invoke(message, null);
+    }
 
-    public async Task ReadAsync(CancellationToken cancellationToken = default)
+    /// <summary>
+    /// Asynchronously reads the first image from the specified XISF file.
+    /// </summary>
+    /// <param name="path">The path to the XISF file to read.</param>
+    /// <param name="cancellationToken">A token to monitor for cancellation requests.</param>
+    /// <returns>A task that represents the asynchronous read operation. The task result contains the first <see cref="XisfImage"/> from the file.</returns>
+    public static Task<XisfImage> ReadAsync(string path, CancellationToken cancellationToken = default)
+    {
+        return ReadAsync(File.OpenRead(path), false, cancellationToken);
+    }
+
+    /// <summary>
+    /// Asynchronously reads the first image from the specified stream.
+    /// </summary>
+    /// <param name="stream">The stream containing XISF data. Must be readable and seekable.</param>
+    /// <param name="cancellationToken">A token to monitor for cancellation requests.</param>
+    /// <returns>A task that represents the asynchronous read operation. The task result contains the first <see cref="XisfImage"/> from the stream.</returns>
+    public static Task<XisfImage> ReadAsync(Stream stream, CancellationToken cancellationToken = default)
+    {
+        return ReadAsync(stream, false, cancellationToken);
+    }
+
+    /// <summary>
+    /// Asynchronously reads the first image from the specified stream with an option to leave the stream open.
+    /// </summary>
+    /// <param name="stream">The stream containing XISF data. Must be readable and seekable.</param>
+    /// <param name="leaveOpen">If true, the stream is left open after reading; otherwise, the stream is disposed.</param>
+    /// <param name="cancellationToken">A token to monitor for cancellation requests.</param>
+    /// <returns>A task that represents the asynchronous read operation. The task result contains the first <see cref="XisfImage"/> from the stream.</returns>
+    public static async Task<XisfImage> ReadAsync(Stream stream, bool leaveOpen, CancellationToken cancellationToken = default)
+    {
+        await using var reader = new XisfReader(stream, leaveOpen);
+        await reader.ReadHeaderAsync(cancellationToken);
+        return await reader.ReadImageAsync(0, cancellationToken);
+    }
+
+    /// <summary>
+    /// Asynchronously reads and parses the XISF file header.
+    /// </summary>
+    /// <param name="cancellationToken">A token to monitor for cancellation requests.</param>
+    /// <returns>A task that represents the asynchronous read operation.</returns>
+    public async Task ReadHeaderAsync(CancellationToken cancellationToken = default)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
+
+        if (_headerRead)
+            return;
 
         _minBlockPosition = 0;
         _images = [];
@@ -76,22 +167,90 @@ internal sealed class XisfReader : IDisposable, IAsyncDisposable
 
         await ReadSignature(cancellationToken);
         await ReadXisfHeader(cancellationToken);
+
+        _headerRead = true;
     }
 
+    /// <summary>
+    /// Asynchronously reads the first image from the XISF file.
+    /// </summary>
+    /// <param name="cancellationToken">A token to monitor for cancellation requests.</param>
+    /// <returns>A task that represents the asynchronous read operation. The task result contains the first <see cref="XisfImage"/>.</returns>
+    public Task<XisfImage> ReadImageAsync(CancellationToken cancellationToken = default)
+    {
+        return ReadImageAsync(0, cancellationToken);
+    }
+
+    /// <summary>
+    /// Asynchronously reads the image at the specified index from the XISF file.
+    /// </summary>
+    /// <param name="index">The zero-based index of the image to read.</param>
+    /// <param name="cancellationToken">A token to monitor for cancellation requests.</param>
+    /// <returns>A task that represents the asynchronous read operation. The task result contains the <see cref="XisfImage"/> at the specified index.</returns>
     public async Task<XisfImage> ReadImageAsync(int index, CancellationToken cancellationToken = default)
     {
-        ArgumentOutOfRangeException.ThrowIfNegative(index);
-        ArgumentOutOfRangeException.ThrowIfGreaterThanOrEqual(index, _images.Count);
         ObjectDisposedException.ThrowIf(_disposed, this);
+        ArgumentOutOfRangeException.ThrowIfNegative(index);
+
+        await ReadHeaderAsync(cancellationToken);
+
+        ArgumentOutOfRangeException.ThrowIfGreaterThanOrEqual(index, _images.Count);
 
         var image = _images[index];
         await image.DataBlock.LoadData(_stream, cancellationToken);
         return image;
     }
 
+    /// <summary>
+    /// Asynchronously reads all images from the XISF file.
+    /// </summary>
+    /// <param name="cancellationToken">A token to monitor for cancellation requests.</param>
+    /// <returns>A task that represents the asynchronous read operation. The task result contains a list of all <see cref="XisfImage"/> instances.</returns>
+    public async Task<List<XisfImage>> ReadAllImagesAsync(CancellationToken cancellationToken = default)
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+
+        await ReadHeaderAsync(cancellationToken);
+
+        List<XisfImage> images = [];
+        for (int i = 0; i < _images.Count; i++)
+        {
+            var image = await ReadImageAsync(i, cancellationToken);
+            images.Add(image);
+        }
+
+        return images;
+    }
+
+    /// <summary>
+    /// Asynchronously enumerates all images in the XISF file.
+    /// </summary>
+    /// <param name="cancellationToken">A token to monitor for cancellation requests.</param>
+    /// <returns>An async enumerable sequence of <see cref="XisfImage"/> instances.</returns>
+    public async IAsyncEnumerable<XisfImage> ReadImagesAsync([EnumeratorCancellation] CancellationToken cancellationToken = default)
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        
+        await ReadHeaderAsync(cancellationToken);
+        
+        for (int i = 0; i < _images.Count; i++)
+        {
+            var image = await ReadImageAsync(i, cancellationToken);
+            yield return image;
+        }
+    }
+
+    /// <summary>
+    /// Asynchronously reads the thumbnail associated with the specified image.
+    /// </summary>
+    /// <param name="image">The image whose thumbnail should be read.</param>
+    /// <param name="cancellationToken">A token to monitor for cancellation requests.</param>
+    /// <returns>A task that represents the asynchronous read operation. The task result contains the thumbnail <see cref="XisfImage"/>, or null if no thumbnail exists.</returns>
     public async Task<XisfImage?> ReadThumbnailAsync(XisfImage image, CancellationToken cancellationToken = default)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
+
+        await ReadHeaderAsync(cancellationToken);
 
         if (image.Thumbnail is null)
             return null;
@@ -156,27 +315,34 @@ internal sealed class XisfReader : IDisposable, IAsyncDisposable
                 var image = await ParseImage(imageElement, cancellation);
                 _images.Add(image);
             }
-            catch (Exception)
+            catch (Exception e)
             {
-                // TODO: log warning
+                LogError($"Failed to parse image'{imageElement}'", e);
+                if (ThrowOnParsingFailure)
+                    throw;
             }
         }
 
-        foreach (var propertyElement in root.Descendants(_ns + "Property"))
+        if (root.Element(_ns + "Metadata") is XElement metadataElement)
         {
-            try
+            foreach (var propertyElement in metadataElement.Descendants(_ns + "Property"))
             {
-                var property = await ParseProperty(propertyElement, cancellation);
-                if (_properties.TryGetProperty(property.Id, out var existingProperty))
+                try
                 {
-                    _properties.Remove(existingProperty!);
-                    // TODO: Log warning about existing property being replaced.
+                    var property = await ParseProperty(propertyElement, cancellation);
+                    if (_properties.TryGetProperty(property.Id, out var existingProperty))
+                    {
+                        _properties.Remove(existingProperty!);
+                        // TODO: Log warning about existing property being replaced.
+                    }
+                    _properties.Add(property);
                 }
-                _properties.Add(property);
-            }
-            catch (Exception)
-            {
-                // TODO: log warning
+                catch (Exception e)
+                {
+                    LogError($"Failed to parse metadata property '{propertyElement}'", e);
+                    if (ThrowOnParsingFailure)
+                        throw;
+                }
             }
         }
     }
@@ -198,7 +364,7 @@ internal sealed class XisfReader : IDisposable, IAsyncDisposable
             throw new XisfException("Invalid image geometry");
 
         var image = new XisfImage(width, height, channels);
-        image.Id = element.Attribute("Id")?.Value;
+        image.Id = element.Attribute("id")?.Value;
         image.Uuid = ParseUuid(element);
         image.Bounds = ParseImageBounds(element);
         image.ImageType = ParseImageType(element);
@@ -208,7 +374,7 @@ internal sealed class XisfReader : IDisposable, IAsyncDisposable
         image.Orientation = ParseOrientation(element);
         image.DataBlock = ParseDataBlock(element);
 
-        if (element.Attribute("Offset")?.Value is { } offsetStr &&
+        if (element.Attribute("offset")?.Value is { } offsetStr &&
             float.TryParse(offsetStr, out float offset))
         {
             image.Offset = offset;
@@ -226,9 +392,11 @@ internal sealed class XisfReader : IDisposable, IAsyncDisposable
                 }
                 image.Properties.Add(property);
             }
-            catch (Exception)
+            catch (Exception e)
             {
-                // TODO: log warning
+                LogError($"Failed to parse image property '{propertyElement}'", e);
+                if (ThrowOnParsingFailure)
+                    throw;
             }
         }
 
@@ -239,9 +407,11 @@ internal sealed class XisfReader : IDisposable, IAsyncDisposable
                 var fitsKeyword = ParseFITSKeyword(fitsKeywordElement);
                 image.FITSKeywords.Add(fitsKeyword);
             }
-            catch (Exception)
+            catch (Exception e)
             {
-                // TODO: log warning
+                LogError($"Failed to parse image FITSKeyword '{fitsKeywordElement}'", e);
+                if (ThrowOnParsingFailure)
+                    throw;
             }
         }
 
@@ -251,9 +421,11 @@ internal sealed class XisfReader : IDisposable, IAsyncDisposable
             {
                 image.ColorFilterArray = ParseColorFilterArray(cfaElement);
             }
-            catch (Exception)
+            catch (Exception e)
             {
-                // TODO: log warning
+                LogError($"Failed to parse image ColorFilterArray '{cfaElement}'", e);
+                if (ThrowOnParsingFailure)
+                    throw;
             }
         }
 
@@ -263,9 +435,11 @@ internal sealed class XisfReader : IDisposable, IAsyncDisposable
             {
                 image.RGBWorkingSpace = ParseRGBWorkingSpace(rgbwsElement);
             }
-            catch (Exception)
+            catch (Exception e)
             {
-                // TODO: log warning
+                LogError($"Failed to parse image RGBWorkingSpace '{rgbwsElement}'", e);
+                if (ThrowOnParsingFailure)
+                    throw;
             }
         }
 
@@ -275,9 +449,11 @@ internal sealed class XisfReader : IDisposable, IAsyncDisposable
             {
                 image.DisplayFunction = ParseDisplayFunction(displayFunctionElement);
             }
-            catch (Exception)
+            catch (Exception e)
             {
-                // TODO: log warning
+                LogError($"Failed to parse image DisplayFunction '{displayFunctionElement}'", e);
+                if (ThrowOnParsingFailure)
+                    throw;
             }
         }
 
@@ -287,9 +463,11 @@ internal sealed class XisfReader : IDisposable, IAsyncDisposable
             {
                 image.Resolution = ParseResolutionElement(resolutionElement);
             }
-            catch (Exception)
+            catch (Exception e)
             {
-                // TODO: log warning
+                LogError($"Failed to parse image Resolution '{resolutionElement}'", e);
+                if (ThrowOnParsingFailure)
+                    throw;
             }
         }
         
@@ -299,9 +477,11 @@ internal sealed class XisfReader : IDisposable, IAsyncDisposable
             {
                 image.Thumbnail = await ParseImage(thumbnailElement, cancellationToken);
             }
-            catch (Exception)
+            catch (Exception e)
             {
-                // TODO: log warning
+                LogError($"Failed to parse image Thumbnail '{thumbnailElement}'", e);
+                if (ThrowOnParsingFailure)
+                    throw;
             }
         }
 
@@ -678,7 +858,7 @@ internal sealed class XisfReader : IDisposable, IAsyncDisposable
         var shadowDynamicRange = GetFourElementArray("l", shadowDynamicRangeStr);
         var highlightDynamicRange = GetFourElementArray("r", highlightDynamicRangeStr);
 
-        return new DisplayFunction(name, midtones, shadows, highlights, shadowDynamicRange, highlightDynamicRange);
+        return new DisplayFunction(midtones, shadows, highlights, shadowDynamicRange, highlightDynamicRange, name);
 
         static double[] GetFourElementArray(string name, string value)
         {
@@ -803,7 +983,7 @@ internal sealed class XisfReader : IDisposable, IAsyncDisposable
     }
 
     private static T[] BytesToArray<T>(ReadOnlyMemory<byte> bytes)
-        where T : struct
+        where T : unmanaged
     {
         // TODO: Byte order
         var span = MemoryMarshal.Cast<byte, T>(bytes.Span);

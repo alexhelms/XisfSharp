@@ -12,7 +12,7 @@ public class ThumbnailTests
         using var filestream = new FileStream(filename, FileMode.Open, FileAccess.Read);
         using var reader = new XisfReader(filestream);
         
-        await reader.ReadAsync();
+        await reader.ReadHeaderAsync();
         
         var image = await reader.ReadImageAsync(0);
         image.Thumbnail.ShouldNotBeNull();

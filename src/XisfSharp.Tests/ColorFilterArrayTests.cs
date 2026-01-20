@@ -31,7 +31,7 @@ public class ColorFilterArrayTests
 
         using var stream = TestHelpers.CreateXisfStreamWith40x30Image(properties);
         using var reader = new XisfReader(stream);
-        await reader.ReadAsync();
+        await reader.ReadHeaderAsync();
         var image = await reader.ReadImageAsync(0);
 
         image.ColorFilterArray.ShouldBeNull();
@@ -59,5 +59,50 @@ public class ColorFilterArrayTests
     public void PatternNotEqualToWidthTimesHeight_Throws()
     {
         Should.Throw<ArgumentException>(() => new ColorFilterArray([CFAElement.R, CFAElement.G, CFAElement.G, CFAElement.B], 1, 1));
+    }
+
+    [TestMethod]
+    [DataRow("RGGB", 2, 2, null, new[] { CFAElement.R, CFAElement.G, CFAElement.G, CFAElement.B })]
+    [DataRow("BGGR", 2, 2, null, new[] { CFAElement.B, CFAElement.G, CFAElement.G, CFAElement.R })]
+    [DataRow("GRBG", 2, 2, null, new[] { CFAElement.G, CFAElement.R, CFAElement.B, CFAElement.G })]
+    [DataRow("GBRG", 2, 2, null, new[] { CFAElement.G, CFAElement.B, CFAElement.R, CFAElement.G })]
+    [DataRow("rggb", 2, 2, null, new[] { CFAElement.R, CFAElement.G, CFAElement.G, CFAElement.B })]
+    [DataRow("RgGb", 2, 2, null, new[] { CFAElement.R, CFAElement.G, CFAElement.G, CFAElement.B })]
+    [DataRow("RGGB", 2, 2, "Bayer RGGB", new[] { CFAElement.R, CFAElement.G, CFAElement.G, CFAElement.B })]
+    [DataRow("RGBGRGBG", 4, 2, null, new[] { CFAElement.R, CFAElement.G, CFAElement.B, CFAElement.G, CFAElement.R, CFAElement.G, CFAElement.B, CFAElement.G })]
+    [DataRow("WWWW", 2, 2, "Mono", new[] { CFAElement.W, CFAElement.W, CFAElement.W, CFAElement.W })]
+    [DataRow("CMYG", 2, 2, null, new[] { CFAElement.C, CFAElement.M, CFAElement.Y, CFAElement.G })]
+    [DataRow("RGBW", 2, 2, null, new[] { CFAElement.R, CFAElement.G, CFAElement.B, CFAElement.W })]
+    [DataRow("RGB", 3, 1, null, new[] { CFAElement.R, CFAElement.G, CFAElement.B })]
+    [DataRow("RGBRGB", 3, 2, "Trilinear", new[] { CFAElement.R, CFAElement.G, CFAElement.B, CFAElement.R, CFAElement.G, CFAElement.B })]
+    public void Constructor_WithStringPattern_CreatesValidColorFilterArray(string pattern, int width, int height, string? name, CFAElement[] expectedPattern)
+    {
+        var cfa = new ColorFilterArray(pattern, width, height, name);
+
+        cfa.Pattern.ShouldBe(expectedPattern);
+        cfa.Width.ShouldBe(width);
+        cfa.Height.ShouldBe(height);
+        cfa.Name.ShouldBe(name);
+    }
+
+    [TestMethod]
+    [DataRow("RGGB", 3, 2, "Pattern length does not match width * height.")]
+    [DataRow("RGB", 2, 2, "Pattern length does not match width * height.")]
+    [DataRow("", 2, 2, "Pattern cannot be empty.")]
+    [DataRow("RGGB", -1, 2, "width")]
+    [DataRow("RGGB", 2, -1, "height")]
+    [DataRow("RXGB", 2, 2, "Invalid character 'X' in pattern string.")]
+    [DataRow("RG GB", 2, 2, "Invalid character ' ' in pattern string.")]
+    [DataRow("RG1B", 2, 2, "Invalid character '1' in pattern string.")]
+    public void Constructor_WithStringPattern_ThrowsOnInvalidInput(string pattern, int width, int height, string expectedErrorFragment)
+    {
+        var exception = Should.Throw<ArgumentException>(() => new ColorFilterArray(pattern, width, height));
+        exception.Message.ShouldContain(expectedErrorFragment);
+    }
+
+    [TestMethod]
+    public void Constructor_WithStringPattern_NullThrows()
+    {
+        Should.Throw<ArgumentNullException>(() => new ColorFilterArray((string)null!, 2, 2));
     }
 }

@@ -3,7 +3,7 @@
 namespace XisfSharp.Tests;
 
 [TestClass]
-public class ReadIntegrationTests
+public class XisfReaderIntegrationTests
 {
     [TestMethod]
     [DataRow("400x300-u8.xisf")]
@@ -13,7 +13,7 @@ public class ReadIntegrationTests
     [DataRow("400x300-f64.xisf")]
     public async Task ReadImageAsync(string filename)
     {
-        var image = await XisfFile.ReadImageAsync(TestHelpers.TestImagePath(filename));
+        var image = await XisfImage.LoadAsync(TestHelpers.TestImagePath(filename));
         image.Width.ShouldBe(400);
         image.Height.ShouldBe(300);
         image.Channels.ShouldBe(1);
@@ -91,7 +91,7 @@ public class ReadIntegrationTests
     [DataRow("400x300-u16-zstd.xisf")]
     public async Task ReadImageAsync_Compression(string filename)
     {
-        var image = await XisfFile.ReadImageAsync(TestHelpers.TestImagePath(filename));
+        var image = await XisfImage.LoadAsync(TestHelpers.TestImagePath(filename));
         image.Width.ShouldBe(400);
         image.Height.ShouldBe(300);
         image.Channels.ShouldBe(1);
@@ -115,7 +115,7 @@ public class ReadIntegrationTests
     [DataRow("400x300-u16-zstd-shuffle.xisf")]
     public async Task ReadImageAsync_ByteShuffle(string filename)
     {
-        var image = await XisfFile.ReadImageAsync(TestHelpers.TestImagePath(filename));
+        var image = await XisfImage.LoadAsync(TestHelpers.TestImagePath(filename));
         image.Width.ShouldBe(400);
         image.Height.ShouldBe(300);
         image.Channels.ShouldBe(1);
@@ -138,7 +138,7 @@ public class ReadIntegrationTests
     [DataRow("400x300-u16-sha512.xisf")]
     public async Task ReadImageAsync_WithSignature(string filename)
     {
-        var image = await XisfFile.ReadImageAsync(TestHelpers.TestImagePath(filename));
+        var image = await XisfImage.LoadAsync(TestHelpers.TestImagePath(filename));
         image.Width.ShouldBe(400);
         image.Height.ShouldBe(300);
         image.Channels.ShouldBe(1);
@@ -158,7 +158,7 @@ public class ReadIntegrationTests
     [TestMethod]
     public async Task ReadImageAsync_EmbeddedImageData()
     {
-        var image = await XisfFile.ReadImageAsync(TestHelpers.TestImagePath("40x30-u16-embedded.xisf"));
+        var image = await XisfImage.LoadAsync(TestHelpers.TestImagePath("40x30-u16-embedded.xisf"));
         image.Width.ShouldBe(40);
         image.Height.ShouldBe(30);
         image.Channels.ShouldBe(1);

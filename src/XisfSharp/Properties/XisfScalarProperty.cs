@@ -5,22 +5,49 @@ namespace XisfSharp.Properties;
 [DebuggerDisplay("{Id} = {Value}")]
 public sealed class XisfScalarProperty : XisfProperty
 {
+    /// <summary>
+    /// Gets the scalar value of the property.
+    /// </summary>
     public object ScalarValue { get; }
 
+    /// <summary>
+    /// Gets the value of the property.
+    /// </summary>
     public override object Value => ScalarValue;
 
     public override string ToString() => ScalarValue?.ToString() ?? string.Empty;
 
+    /// <summary>
+    /// Create a new <see cref="XisfScalarProperty"/>.
+    /// </summary>
+    /// <param name="id">The unique identifier for the property.</param>
+    /// <param name="type">The scalar type of the property value.</param>
+    /// <param name="value">The scalar value. Cannot be null.</param>
     public XisfScalarProperty(string id, XisfPropertyType type, object value)
         : this(id, type, value, null, null)
     {
     }
 
+    /// <summary>
+    /// Create a new <see cref="XisfScalarProperty"/>.
+    /// </summary>
+    /// <param name="id">The unique identifier for the property.</param>
+    /// <param name="type">The scalar type of the property value.</param>
+    /// <param name="value">The scalar value. Cannot be null.</param>
+    /// <param name="comment">An optional comment describing the property.</param>
     public XisfScalarProperty(string id, XisfPropertyType type, object value, string? comment)
         : this(id, type, value, comment, null)
     {
     }
 
+    /// <summary>
+    /// Create a new <see cref="XisfScalarProperty"/>.
+    /// </summary>
+    /// <param name="id">The unique identifier for the property.</param>
+    /// <param name="type">The scalar type of the property value.</param>
+    /// <param name="value">The scalar value. Cannot be null.</param>
+    /// <param name="comment">An optional comment describing the property.</param>
+    /// <param name="format">An optional format hint for the property value.</param>
     public XisfScalarProperty(string id, XisfPropertyType type, object value, string? comment, string? format)
         : base(id, type, comment, format)
     {
@@ -42,16 +69,37 @@ public sealed class XisfScalarProperty : XisfProperty
         ScalarValue = value;
     }
 
+    /// <summary>
+    /// Creates a new <see cref="XisfScalarProperty"/> from a strongly-typed value.
+    /// </summary>
+    /// <typeparam name="T">The unmanaged type of the scalar value.</typeparam>
+    /// <param name="id">The unique identifier for the property.</param>
+    /// <param name="value">The scalar value.</param>
     public static XisfScalarProperty Create<T>(string id, T value)
-        where T : struct
+        where T : unmanaged
         => Create(id, value, null, null);
 
+    /// <summary>
+    /// Creates a new <see cref="XisfScalarProperty"/> from a strongly-typed value.
+    /// </summary>
+    /// <typeparam name="T">The unmanaged type of the scalar value.</typeparam>
+    /// <param name="id">The unique identifier for the property.</param>
+    /// <param name="value">The scalar value.</param>
+    /// <param name="comment">An optional comment describing the property.</param>
     public static XisfScalarProperty Create<T>(string id, T value, string? comment)
-        where T : struct
+        where T : unmanaged
         => Create(id, value, comment, null);
 
+    /// <summary>
+    /// Creates a new <see cref="XisfScalarProperty"/> from a strongly-typed value.
+    /// </summary>
+    /// <typeparam name="T">The unmanaged type of the scalar value.</typeparam>
+    /// <param name="id">The unique identifier for the property.</param>
+    /// <param name="value">The scalar value.</param>
+    /// <param name="comment">An optional comment describing the property.</param>
+    /// <param name="format">An optional format hint for the property value.</param>
     public static XisfScalarProperty Create<T>(string id, T value, string? comment, string? format)
-        where T : struct
+        where T : unmanaged
     {
         var type = typeof(T) switch
         {

@@ -177,6 +177,17 @@ public class XisfMatrixPropertyTests
     }
 
     [TestMethod]
+    public void Create_1DArray_Empty()
+    {
+        float[] elements = [];
+        var property = XisfMatrixProperty.Create("test", elements, 0, 0);
+
+        property.Rows.ShouldBe(0);
+        property.Columns.ShouldBe(0);
+        property.Length.ShouldBe(0);
+    }
+
+    [TestMethod]
     public void Create_SingleElementMatrix()
     {
         int[] elements = [42];
@@ -265,6 +276,53 @@ public class XisfMatrixPropertyTests
     }
 
     [TestMethod]
+    public void Create_2DArray_Int32()
+    {
+        int[,] elements = { { 1, 2, 3 }, { 4, 5, 6 } };
+        var property = XisfMatrixProperty.Create("test", elements);
+
+        property.Id.ShouldBe("test");
+        property.Type.ShouldBe(XisfPropertyType.I32Matrix);
+        property.Rows.ShouldBe(2);
+        property.Columns.ShouldBe(3);
+        property.Length.ShouldBe(6);
+        property.Elements.ShouldBe(elements);
+        property.Comment.ShouldBeNull();
+        property.Format.ShouldBeNull();
+    }
+
+    [TestMethod]
+    public void Create_2DArray_WithComment()
+    {
+        float[,] elements = { { 1.1f, 2.2f }, { 3.3f, 4.4f } };
+        var property = XisfMatrixProperty.Create("test", elements, "Test comment");
+
+        property.Comment.ShouldBe("Test comment");
+        property.Format.ShouldBeNull();
+    }
+
+    [TestMethod]
+    public void Create_2DArray_WithCommentAndFormat()
+    {
+        double[,] elements = { { 1.1, 2.2 }, { 3.3, 4.4 } };
+        var property = XisfMatrixProperty.Create("test", elements, "Test comment", "%.2f");
+
+        property.Comment.ShouldBe("Test comment");
+        property.Format.ShouldBe("%.2f");
+    }
+
+    [TestMethod]
+    public void Create_2DArray_Empty()
+    {
+        float[,] elements = new float[0,0];
+        var property = XisfMatrixProperty.Create("test", elements);
+
+        property.Rows.ShouldBe(0);
+        property.Columns.ShouldBe(0);
+        property.Length.ShouldBe(0);
+    }
+
+    [TestMethod]
     public void Constructor_I8Matrix()
     {
         sbyte[] elements = [1, 2, 3, 4];
@@ -344,25 +402,103 @@ public class XisfMatrixPropertyTests
     }
 
     [TestMethod]
-    public void GetElements_ReturnsTypedArray()
+    public void Constructor_NegativeRows_Throws()
     {
-        int[] elements = [1, 2, 3, 4, 5, 6];
-        var property = XisfMatrixProperty.Create("test", elements, 2, 3);
+        int[] elements = [1, 2, 3, 4];
 
-        var retrieved = property.GetElements<int>();
-
-        retrieved.ShouldBe(elements);
+        Should.Throw<ArgumentException>(() =>
+            new XisfMatrixProperty("test", XisfPropertyType.I32Matrix, elements, -1, 2))
+            .ParamName.ShouldBe("rows");
     }
 
     [TestMethod]
-    public void GetElements_Float_ReturnsTypedArray()
+    public void Constructor_NegativeColumns_Throws()
     {
-        float[] elements = [1.1f, 2.2f, 3.3f, 4.4f];
-        var property = XisfMatrixProperty.Create("test", elements, 2, 2);
+        int[] elements = [1, 2, 3, 4];
 
-        var retrieved = property.GetElements<float>();
+        Should.Throw<ArgumentException>(() =>
+            new XisfMatrixProperty("test", XisfPropertyType.I32Matrix, elements, 2, -1))
+            .ParamName.ShouldBe("columns");
+    }
 
-        retrieved.ShouldBe(elements);
+    [TestMethod]
+    public void Constructor_2DArray_Int32_AutoDetectsDimensions()
+    {
+        int[,] elements = { { 1, 2, 3 }, { 4, 5, 6 } };
+        var property = new XisfMatrixProperty("test", elements);
+
+        property.Id.ShouldBe("test");
+        property.Type.ShouldBe(XisfPropertyType.I32Matrix);
+        property.Rows.ShouldBe(2);
+        property.Columns.ShouldBe(3);
+        property.Length.ShouldBe(6);
+        property.Elements.ShouldBe(elements);
+    }
+
+    [TestMethod]
+    public void Constructor_2DArray_Float_AutoDetectsDimensions()
+    {
+        float[,] elements = { { 1.1f, 2.2f }, { 3.3f, 4.4f }, { 5.5f, 6.6f } };
+        var property = new XisfMatrixProperty("test", elements);
+
+        property.Id.ShouldBe("test");
+        property.Type.ShouldBe(XisfPropertyType.F32Matrix);
+        property.Rows.ShouldBe(3);
+        property.Columns.ShouldBe(2);
+        property.Length.ShouldBe(6);
+    }
+
+    [TestMethod]
+    public void Constructor_2DArray_WithComment()
+    {
+        int[,] elements = { { 1, 2 }, { 3, 4 } };
+        var property = new XisfMatrixProperty("test", elements, "Test comment");
+
+        property.Comment.ShouldBe("Test comment");
+        property.Format.ShouldBeNull();
+    }
+
+    [TestMethod]
+    public void Constructor_2DArray_WithCommentAndFormat()
+    {
+        double[,] elements = { { 1.1, 2.2 }, { 3.3, 4.4 } };
+        var property = new XisfMatrixProperty("test", elements, "Test comment", "%.2f");
+
+        property.Comment.ShouldBe("Test comment");
+        property.Format.ShouldBe("%.2f");
+    }
+
+    [TestMethod]
+    public void Constructor_2DArray_AllTypes()
+    {
+        new XisfMatrixProperty("test", new sbyte[,] { { 1, 2 }, { 3, 4 } }).Type.ShouldBe(XisfPropertyType.I8Matrix);
+        new XisfMatrixProperty("test", new byte[,] { { 1, 2 }, { 3, 4 } }).Type.ShouldBe(XisfPropertyType.UI8Matrix);
+        new XisfMatrixProperty("test", new short[,] { { 1, 2 }, { 3, 4 } }).Type.ShouldBe(XisfPropertyType.I16Matrix);
+        new XisfMatrixProperty("test", new ushort[,] { { 1, 2 }, { 3, 4 } }).Type.ShouldBe(XisfPropertyType.UI16Matrix);
+        new XisfMatrixProperty("test", new int[,] { { 1, 2 }, { 3, 4 } }).Type.ShouldBe(XisfPropertyType.I32Matrix);
+        new XisfMatrixProperty("test", new uint[,] { { 1, 2 }, { 3, 4 } }).Type.ShouldBe(XisfPropertyType.UI32Matrix);
+        new XisfMatrixProperty("test", new long[,] { { 1, 2 }, { 3, 4 } }).Type.ShouldBe(XisfPropertyType.I64Matrix);
+        new XisfMatrixProperty("test", new ulong[,] { { 1, 2 }, { 3, 4 } }).Type.ShouldBe(XisfPropertyType.UI64Matrix);
+        new XisfMatrixProperty("test", new float[,] { { 1, 2 }, { 3, 4 } }).Type.ShouldBe(XisfPropertyType.F32Matrix);
+        new XisfMatrixProperty("test", new double[,] { { 1, 2 }, { 3, 4 } }).Type.ShouldBe(XisfPropertyType.F64Matrix);
+    }
+
+    [TestMethod]
+    public void Constructor_1DArray_Throws()
+    {
+        int[] elements = [1, 2, 3, 4];
+
+        Should.Throw<ArgumentException>(() => new XisfMatrixProperty("test", elements))
+            .Message.ShouldContain("1D arrays");
+    }
+
+    [TestMethod]
+    public void Constructor_3DArray_Throws()
+    {
+        int[,,] elements = new int[2, 2, 2];
+
+        Should.Throw<ArgumentException>(() => new XisfMatrixProperty("test", elements))
+            .Message.ShouldContain("rank 3");
     }
 
     [TestMethod]
@@ -491,6 +627,92 @@ public class XisfMatrixPropertyTests
     }
 
     [TestMethod]
+    public void GetBytes_Empty()
+    {
+        int[] elements = [];
+        var property = XisfMatrixProperty.Create("test", elements, 0, 0);
+
+        var bytes = property.GetBytes();
+
+        bytes.Length.ShouldBe(0);
+    }
+
+    [TestMethod]
+    public void GetBytes_2DArray_I32Matrix()
+    {
+        int[,] elements = { { 1, 2, 3 }, { 4, 5, 6 } };
+        var property = XisfMatrixProperty.Create("test", elements);
+
+        var bytes = property.GetBytes();
+
+        bytes.Length.ShouldBe(24); // 6 elements * 4 bytes each
+                                   // Verify row-major order flattening
+        BitConverter.ToInt32(bytes, 0).ShouldBe(1);
+        BitConverter.ToInt32(bytes, 4).ShouldBe(2);
+        BitConverter.ToInt32(bytes, 8).ShouldBe(3);
+        BitConverter.ToInt32(bytes, 12).ShouldBe(4);
+        BitConverter.ToInt32(bytes, 16).ShouldBe(5);
+        BitConverter.ToInt32(bytes, 20).ShouldBe(6);
+    }
+
+    [TestMethod]
+    public void GetBytes_2DArray_UI8Matrix()
+    {
+        byte[,] elements = { { 1, 2, 3 }, { 4, 5, 6 } };
+        var property = XisfMatrixProperty.Create("test", elements);
+
+        var bytes = property.GetBytes();
+
+        bytes.Length.ShouldBe(6);
+        bytes.ShouldBe(new byte[] { 1, 2, 3, 4, 5, 6 });
+    }
+
+    [TestMethod]
+    public void GetBytes_2DArray_F64Matrix()
+    {
+        double[,] elements = { { 1.5, 2.5 }, { 3.5, 4.5 } };
+        var property = XisfMatrixProperty.Create("test", elements);
+
+        var bytes = property.GetBytes();
+
+        bytes.Length.ShouldBe(32); // 4 elements * 8 bytes each
+    }
+
+    [TestMethod]
+    public void GetBytes_2DArray_SingleElement()
+    {
+        int[,] elements = { { 42 } };
+        var property = XisfMatrixProperty.Create("test", elements);
+
+        var bytes = property.GetBytes();
+
+        bytes.Length.ShouldBe(4);
+        BitConverter.ToInt32(bytes, 0).ShouldBe(42);
+    }
+
+    [TestMethod]
+    public void GetBytes_2DArray_Empty()
+    {
+        int[,] elements = new int[0, 0];
+        var property = XisfMatrixProperty.Create("test", elements);
+
+        var bytes = property.GetBytes();
+
+        bytes.Length.ShouldBe(0);
+    }
+
+    [TestMethod]
+    public void GetBytes_2DArray_SquareMatrix()
+    {
+        int[,] elements = { { 1, 2, 3 }, { 4, 5, 6 }, { 7, 8, 9 } };
+        var property = XisfMatrixProperty.Create("test", elements);
+
+        var bytes = property.GetBytes();
+
+        bytes.Length.ShouldBe(36); // 9 elements * 4 bytes each
+    }
+
+    [TestMethod]
     public void ToString_ReturnsDescription()
     {
         int[] elements = [1, 2, 3, 4, 5, 6];
@@ -544,7 +766,7 @@ public class XisfMatrixPropertyTests
     }
 
     [TestMethod]
-    public void IXisfProperty_Value_ReturnsElements()
+    public void XisfProperty_Value_ReturnsElements()
     {
         int[] elements = [1, 2, 3, 4];
         var property = XisfMatrixProperty.Create("test", elements, 2, 2);
@@ -706,5 +928,172 @@ public class XisfMatrixPropertyTests
         // Different matrix sizes but same element type should have same bytes per element
         property1.GetBytesPerElement().ShouldBe(property2.GetBytesPerElement());
         property1.GetBytesPerElement().ShouldBe(4);
+    }
+
+    [TestMethod]
+    public void GetElementsAs1D_From1DArray_ReturnsDirect()
+    {
+        int[] elements = [1, 2, 3, 4, 5, 6];
+        var property = XisfMatrixProperty.Create("test", elements, 2, 3);
+
+        var result = property.GetElementsAs1D<int>();
+
+        result.ShouldBeSameAs(elements);
+        result.ShouldBe([1, 2, 3, 4, 5, 6]);
+    }
+
+    [TestMethod]
+    public void GetElementsAs1D_From2DArray_Flattens()
+    {
+        int[,] elements = { { 1, 2, 3 }, { 4, 5, 6 } };
+        var property = XisfMatrixProperty.Create("test", elements);
+
+        var result = property.GetElementsAs1D<int>();
+
+        result.ShouldBe([1, 2, 3, 4, 5, 6]);
+        result.Length.ShouldBe(6);
+    }
+
+    [TestMethod]
+    public void GetElementsAs1D_From2DArray_RowMajorOrder()
+    {
+        int[,] elements = { { 1, 2 }, { 3, 4 }, { 5, 6 } };
+        var property = XisfMatrixProperty.Create("test", elements);
+
+        var result = property.GetElementsAs1D<int>();
+
+        result.ShouldBe([1, 2, 3, 4, 5, 6]);
+    }
+
+    [TestMethod]
+    public void GetElementsAs1D_SingleElement()
+    {
+        int[,] elements = { { 42 } };
+        var property = XisfMatrixProperty.Create("test", elements);
+
+        var result = property.GetElementsAs1D<int>();
+
+        result.ShouldBe([42]);
+    }
+
+    [TestMethod]
+    public void GetElementsAs2D_From2DArray_ReturnsDirect()
+    {
+        int[,] elements = { { 1, 2, 3 }, { 4, 5, 6 } };
+        var property = XisfMatrixProperty.Create("test", elements);
+
+        var result = property.GetElementsAs2D<int>();
+
+        result.ShouldBeSameAs(elements);
+        result.GetLength(0).ShouldBe(2);
+        result.GetLength(1).ShouldBe(3);
+    }
+
+    [TestMethod]
+    public void GetElementsAs2D_From1DArray_Reshapes()
+    {
+        int[] elements = [1, 2, 3, 4, 5, 6];
+        var property = XisfMatrixProperty.Create("test", elements, 2, 3);
+
+        var result = property.GetElementsAs2D<int>();
+
+        result.GetLength(0).ShouldBe(2);
+        result.GetLength(1).ShouldBe(3);
+        result[0, 0].ShouldBe(1);
+        result[0, 1].ShouldBe(2);
+        result[0, 2].ShouldBe(3);
+        result[1, 0].ShouldBe(4);
+        result[1, 1].ShouldBe(5);
+        result[1, 2].ShouldBe(6);
+    }
+
+    [TestMethod]
+    public void GetElementsAs2D_From1DArray_RowMajorOrder()
+    {
+        int[] elements = [1, 2, 3, 4, 5, 6];
+        var property = XisfMatrixProperty.Create("test", elements, 3, 2);
+
+        var result = property.GetElementsAs2D<int>();
+
+        result.GetLength(0).ShouldBe(3);
+        result.GetLength(1).ShouldBe(2);
+        result[0, 0].ShouldBe(1);
+        result[0, 1].ShouldBe(2);
+        result[1, 0].ShouldBe(3);
+        result[1, 1].ShouldBe(4);
+        result[2, 0].ShouldBe(5);
+        result[2, 1].ShouldBe(6);
+    }
+
+    [TestMethod]
+    public void GetElementsAs2D_SingleElement()
+    {
+        int[] elements = [42];
+        var property = XisfMatrixProperty.Create("test", elements, 1, 1);
+
+        var result = property.GetElementsAs2D<int>();
+
+        result.GetLength(0).ShouldBe(1);
+        result.GetLength(1).ShouldBe(1);
+        result[0, 0].ShouldBe(42);
+    }
+
+    [TestMethod]
+    public void GetElementsAs2D_SingleRow()
+    {
+        int[] elements = [1, 2, 3, 4, 5];
+        var property = XisfMatrixProperty.Create("test", elements, 1, 5);
+
+        var result = property.GetElementsAs2D<int>();
+
+        result.GetLength(0).ShouldBe(1);
+        result.GetLength(1).ShouldBe(5);
+        result[0, 0].ShouldBe(1);
+        result[0, 4].ShouldBe(5);
+    }
+
+    [TestMethod]
+    public void GetElementsAs2D_SingleColumn()
+    {
+        int[] elements = [1, 2, 3, 4, 5];
+        var property = XisfMatrixProperty.Create("test", elements, 5, 1);
+
+        var result = property.GetElementsAs2D<int>();
+
+        result.GetLength(0).ShouldBe(5);
+        result.GetLength(1).ShouldBe(1);
+        result[0, 0].ShouldBe(1);
+        result[4, 0].ShouldBe(5);
+    }
+
+    [TestMethod]
+    public void GetElementsAs1D_Then_GetElementsAs2D_RoundTrip()
+    {
+        int[,] original = { { 1, 2, 3 }, { 4, 5, 6 } };
+        var property = XisfMatrixProperty.Create("test", original);
+
+        var as1D = property.GetElementsAs1D<int>();
+        var property2 = XisfMatrixProperty.Create("test2", as1D, 2, 3);
+        var as2D = property2.GetElementsAs2D<int>();
+
+        as2D[0, 0].ShouldBe(original[0, 0]);
+        as2D[0, 1].ShouldBe(original[0, 1]);
+        as2D[0, 2].ShouldBe(original[0, 2]);
+        as2D[1, 0].ShouldBe(original[1, 0]);
+        as2D[1, 1].ShouldBe(original[1, 1]);
+        as2D[1, 2].ShouldBe(original[1, 2]);
+    }
+
+    [TestMethod]
+    public void GetElementsAs2D_Then_GetElementsAs1D_RoundTrip()
+    {
+        int[] original = [1, 2, 3, 4, 5, 6];
+        var property = XisfMatrixProperty.Create("test", original, 2, 3);
+
+        var as2D = property.GetElementsAs2D<int>();
+        var property2 = XisfMatrixProperty.Create("test2", as2D);
+        var as1D = property2.GetElementsAs1D<int>();
+
+        as1D.ShouldBe(original);
     }
 }

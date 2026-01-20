@@ -8,7 +8,7 @@ public class DisplayFunctionTests
     [TestMethod]
     public async Task ParseDisplayFunction()
     {
-        var image = await XisfFile.ReadImageAsync(TestHelpers.TestImagePath("200x150-u16-zstd-shuffle-process-history-display-function-icc-sha1.xisf"));
+        var image = await XisfImage.LoadAsync(TestHelpers.TestImagePath("200x150-u16-zstd-shuffle-process-history-display-function-icc-sha1.xisf"));
 
         image.DisplayFunction.ShouldNotBeNull();
         image.DisplayFunction.Midtones.ShouldBe([0.25d, 0.25d, 0.25d, 0.5d], 1e-5);
@@ -54,7 +54,7 @@ public class DisplayFunctionTests
 
         using var stream = TestHelpers.CreateXisfStreamWith40x30Image(properties);
         using var reader = new XisfReader(stream);
-        await reader.ReadAsync();
+        await reader.ReadHeaderAsync();
         var image = await reader.ReadImageAsync(0);
 
         image.DisplayFunction.ShouldBeNull();

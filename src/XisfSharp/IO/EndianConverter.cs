@@ -6,8 +6,8 @@ namespace XisfSharp.IO;
 
 internal static class EndianConverter
 {
-    public static void ReverseEndianness<T>(ReadOnlySpan<byte> source, Span<T> destination)
-        where T : struct
+    internal static void ReverseEndianness<T>(ReadOnlySpan<byte> source, Span<T> destination)
+        where T : unmanaged
     {
         var bytesPerElement = Unsafe.SizeOf<T>();
 

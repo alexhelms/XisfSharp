@@ -235,4 +235,21 @@ public class XisfMatrixPropertyIntegrationTests
         ((XisfMatrixProperty)image.Properties[0]).Rows.ShouldBe(2);
         ((XisfMatrixProperty)image.Properties[0]).Columns.ShouldBe(3);
     }
+
+    [TestMethod]
+    public async Task WriteRead_2DArray_F32Matrix()
+    {
+        var originalImage = new XisfImage([1, 2, 3, 4, 5, 6], 3, 2, 1, SampleFormat.UInt8);
+        float[,] matrix = { { 1f, 2f, 3f }, { 4f, 5f, 6f } };
+        originalImage.Properties.Add(XisfMatrixProperty.Create("test", matrix));
+
+        var (image, xml) = await TestHelpers.WriteAndReadImageWithXml(originalImage);
+
+        xml.ShouldContain("""<Property id="test" type="F32Matrix" rows="2" columns="3" location="inline:base64">AACAPwAAAEAAAEBAAACAQAAAoEAAAMBA</Property>""");
+
+        image.Properties.Count.ShouldBe(1);
+        image.Properties[0].Type.ShouldBe(XisfPropertyType.F32Matrix);
+        ((XisfMatrixProperty)image.Properties[0]).Rows.ShouldBe(2);
+        ((XisfMatrixProperty)image.Properties[0]).Columns.ShouldBe(3);
+    }
 }

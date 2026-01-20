@@ -7,7 +7,7 @@ namespace XisfSharp.IO;
 internal static class XisfBinaryReader
 {
     public static T ReadElement<T>(ReadOnlySpan<byte> bytes, bool isLittleEndian)
-        where T : struct
+        where T : unmanaged
     {
         bool needsReverse = isLittleEndian != BitConverter.IsLittleEndian;
 
@@ -42,7 +42,7 @@ internal static class XisfBinaryReader
         int count,
         bool isLittleEndian,
         CancellationToken cancellation = default)
-        where T : struct
+        where T : unmanaged
     {
         stream.Position = position;
         var elements = GC.AllocateUninitializedArray<T>(count);

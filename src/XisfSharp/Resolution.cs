@@ -8,10 +8,6 @@ public sealed class Resolution
 
     public ResolutionUnit? Unit { get; }
 
-    public Resolution()
-    {
-    }
-
     public Resolution(double horizontal, double vertical)
         : this(horizontal, vertical, null)
     {
