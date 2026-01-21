@@ -33,7 +33,12 @@ jobs:
         dotnet-version: ${{ matrix.dotnet }}
 
     - name: Build
-      run: dotnet build --configuration Release
+      run: |
+        dotnet tool restore
+        dotnet build --configuration Release
+
+    - name: Show Version
+      run: dotnet tool run dotnet-gitversion
 
     - name: Test
       run: dotnet test --configuration Release --no-build
@@ -41,3 +46,9 @@ jobs:
     - name: Pack
       run: |
         dotnet pack --configuration Release --no-build --output ./artifacts
+
+    - uses: actions/upload-artifact@v6
+      with:
+        name: nugets
+        path: ./artifacts
+        if-no-files-found: error

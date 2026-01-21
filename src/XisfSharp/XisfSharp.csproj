@@ -32,11 +32,14 @@
     </None>
   </ItemGroup>
 
+  <Target Name="PrintVersionInfo" AfterTargets="Build" Condition="'$(GitVersion_InformationalVersion)' != ''">
+    <Message Text="$(MSBuildProjectName) Version: $(GitVersion_InformationalVersion)" Importance="high" />
+  </Target>
+
   <ItemGroup>
     <PackageReference Include="K4os.Compression.LZ4" />
-    <PackageReference Include="Nerdbank.GitVersioning">
+    <PackageReference Include="GitVersion.MsBuild">
       <PrivateAssets>all</PrivateAssets>
-      <IncludeAssets>runtime; build; native; contentfiles; analyzers</IncludeAssets>
     </PackageReference>
     <PackageReference Include="ZstdSharp.Port" />
   </ItemGroup>
