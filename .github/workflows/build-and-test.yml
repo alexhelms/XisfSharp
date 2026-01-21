@@ -50,5 +50,5 @@ jobs:
     - uses: actions/upload-artifact@v6
       with:
         name: nugets
-        path: ./artifacts
+        path: artifacts/*
         if-no-files-found: error
