@@ -66,7 +66,7 @@ public static class TestHelpers
         return CreateXisfStream(xml);
     }
 
-    private static Stream CreateXisfStream(string xml)
+    public static Stream CreateXisfStream(string xml)
     {
         byte[] signature = "XISF0100\0\0\0\0\0\0\0\0"u8.ToArray();
         byte[] headerXmlBytes = System.Text.Encoding.UTF8.GetBytes(xml);

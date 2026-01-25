@@ -538,7 +538,7 @@ public sealed class XisfReader : IDisposable, IAsyncDisposable
     private static ImageType ParseImageType(XElement element)
     {
         var imageTypeStr = element.Attribute("imageType")?.Value ?? "Light";
-        if (Enum.TryParse<ImageType>(imageTypeStr, out var result))
+        if (Enum.TryParse<ImageType>(imageTypeStr, true, out var result))
         {
             return result;
         }
