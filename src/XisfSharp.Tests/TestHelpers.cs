@@ -19,11 +19,14 @@ public static class TestHelpers
         return image;
     }
 
-    public static async Task<(XisfImage, string)> WriteAndReadImageWithXml(XisfImage inputImage)
+    public static Task<(XisfImage, string)> WriteAndReadImageWithXml(XisfImage inputImage)
+        => WriteAndReadImageWithXml(inputImage, new XisfWriterOptions());
+
+    public static async Task<(XisfImage, string)> WriteAndReadImageWithXml(XisfImage inputImage, XisfWriterOptions options)
     {
         byte[] xisfData;
         using (var ms = new MemoryStream())
-        using (var writer = new XisfWriter(ms))
+        using (var writer = new XisfWriter(ms, options))
         {
             writer.AddImage(inputImage);
             await writer.SaveAsync();

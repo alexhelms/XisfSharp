@@ -6,6 +6,28 @@ namespace XisfSharp.Tests;
 public class XisfVectorPropertyIntegrationTests
 {
     [TestMethod]
+    [DataRow(CompressionCodec.Zlib)]
+    [DataRow(CompressionCodec.Lz4)]
+    [DataRow(CompressionCodec.Lz4Hc)]
+    [DataRow(CompressionCodec.Zstd)]
+    public async Task WriteRead_SmallVector_WithCompression_DataIsPresent(CompressionCodec codec)
+    {
+        // 2 doubles = 16 bytes, well under the 64-byte compression threshold
+        var originalImage = new XisfImage([1, 2, 3, 4, 5, 6], 3, 2, 1, SampleFormat.UInt8);
+        originalImage.Properties.Add(XisfVectorProperty.Create<double>("test", [182.8, 90.0]));
+
+        var options = new XisfWriterOptions { CompressionCodec = codec };
+        var (image, xml) = await TestHelpers.WriteAndReadImageWithXml(originalImage, options);
+
+        xml.ShouldNotContain("""type="F64Vector" length="2"/>""");
+        xml.ShouldContain("""location=""");
+
+        image.Properties.Count.ShouldBe(1);
+        image.Properties[0].Type.ShouldBe(XisfPropertyType.F64Vector);
+        image.Properties[0].Value.ShouldBe(new double[] { 182.8, 90.0 });
+    }
+
+    [TestMethod]
     public async Task WriteRead_CommentAndFormat()
     {
         var originalImage = new XisfImage([1, 2, 3, 4, 5, 6], 3, 2, 1, SampleFormat.UInt8);

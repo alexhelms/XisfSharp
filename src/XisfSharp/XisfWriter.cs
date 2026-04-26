@@ -657,10 +657,10 @@ public sealed class XisfWriter : IDisposable, IAsyncDisposable
         {
             // Check for minimum size to benefit from compression
             var uncompressedSize = blockData.Length;
-            if (uncompressedSize < 64)
-                return;
-
-            block.CompressData(_options.CompressionCodec, itemSize, _options.ShuffleBytes);
+            if (uncompressedSize >= 64)
+            {
+                block.CompressData(_options.CompressionCodec, itemSize, _options.ShuffleBytes);
+            }
         }
 
         var blockSize = block.BlockSize;
