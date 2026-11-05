@@ -1,6 +1,7 @@
 ﻿using K4os.Compression.LZ4;
 using System.IO.Compression;
 using System.Security.Cryptography;
+using XisfSharp.IO;
 using XisfSharp.Properties;
 using ZstdSharp;
 
@@ -128,17 +129,14 @@ internal static class XisfUtil
     internal static byte[] Shuffle(ReadOnlySpan<byte> unshuffled, int itemSize)
     {
         int size = unshuffled.Length;
-        byte[] output = new byte[size];
+        byte[] output = GC.AllocateUninitializedArray<byte>(size);
         int numberOfItems = size / itemSize;
-        int s = 0; // destination index
+        var items = unshuffled[..(numberOfItems * itemSize)];
+        int s = numberOfItems * itemSize;
 
         for (int j = 0; j < itemSize; j++)
         {
-            int u = j; // source index
-            for (int i = 0; i < numberOfItems; i++, s++, u += itemSize)
-            {
-                output[s] = unshuffled[u];
-            }
+            ByteShuffle.ExtractPlane(items, itemSize, j, output.AsSpan(j * numberOfItems, numberOfItems));
         }
 
         // Copy remaining bytes (size % itemSize)
@@ -151,61 +149,12 @@ internal static class XisfUtil
         return output;
     }
 
-    internal static byte[] Unshuffle(ReadOnlySpan<byte> shuffled, int itemSize)
-    {
-        int size = shuffled.Length;
-        byte[] output = new byte[size];
-        int numberOfItems = size / itemSize;
-        int s = 0; // source index
-
-        for (int j = 0; j < itemSize; j++)
-        {
-            int u = j; // destination index
-            for (int i = 0; i < numberOfItems; i++, s++, u += itemSize)
-            {
-                output[u] = shuffled[s];
-            }
-        }
-
-        // Copy remaining bytes (size % itemSize)
-        int remainder = size % itemSize;
-        if (remainder > 0)
-        {
-            shuffled.Slice(s, remainder).CopyTo(output.AsSpan(numberOfItems * itemSize));
-        }
-
-        return output;
-    }
-
-    internal static void InPlaceUnshuffle(Span<byte> data, int itemSize)
-    {
-        if (data.IsEmpty)
-            return;
-
-        byte[] shuffled = data.ToArray();
-
-        int size = data.Length;
-        int numberOfItems = size / itemSize;
-        int s = 0; // source index
-
-        for (int j = 0; j < itemSize; j++)
-        {
-            int u = j; // destination index
-            for (int i = 0; i < numberOfItems; i++, s++, u += itemSize)
-            {
-                data[u] = shuffled[s];
-            }
-        }
-
-        // Copy remaining bytes (size % itemSize)
-        int remainder = size % itemSize;
-        if (remainder > 0)
-        {
-            shuffled.AsSpan(s, remainder).CopyTo(data.Slice(numberOfItems * itemSize));
-        }
-    }
-
-    internal static byte[] Compress(ReadOnlySpan<byte> input, CompressionCodec codec)
+    /// <param name="input">The data to compress.</param>
+    /// <param name="codec">The compression codec.</param>
+    /// <param name="multithreaded">
+    /// Whether the codec may use its own worker threads. Disable when compressing several subblocks in parallel.
+    /// </param>
+    internal static byte[] Compress(ReadOnlySpan<byte> input, CompressionCodec codec, bool multithreaded = true)
     {
         byte[] output;
 
@@ -225,10 +174,13 @@ internal static class XisfUtil
 
             case CompressionCodec.Zlib:
                 using (var ms = new MemoryStream())
-                using (var zlib = new ZLibStream(ms, CompressionLevel.Optimal))
                 {
-                    zlib.Write(input);
-                    zlib.Flush();
+                    // Disposing the zlib stream writes the final deflate block and the Adler-32 trailer.
+                    using (var zlib = new ZLibStream(ms, CompressionLevel.Optimal, leaveOpen: true))
+                    {
+                        zlib.Write(input);
+                    }
+
                     output = ms.ToArray();
                 }
                 break;
@@ -236,7 +188,9 @@ internal static class XisfUtil
             case CompressionCodec.Zstd:
                 using (var zstd = new Compressor())
                 {
-                    zstd.SetParameter(ZstdSharp.Unsafe.ZSTD_cParameter.ZSTD_c_nbWorkers, Environment.ProcessorCount);
+                    if (multithreaded)
+                        zstd.SetParameter(ZstdSharp.Unsafe.ZSTD_cParameter.ZSTD_c_nbWorkers, Environment.ProcessorCount);
+
                     output = zstd.Wrap(input).ToArray();
                 }
                 break;
@@ -248,19 +202,28 @@ internal static class XisfUtil
         return output;
     }
 
-    internal static byte[] Decompress(ReadOnlySpan<byte> input, long uncompressedSize, CompressionCodec codec)
+    /// <summary>
+    /// Decompresses a single subblock into a buffer sized exactly to its uncompressed length.
+    /// </summary>
+    internal static void DecompressSubblock(ReadOnlySpan<byte> input, Span<byte> output, CompressionCodec codec)
     {
-        byte[] output;
+        int decompressedSize;
 
         switch (codec)
         {
+            case CompressionCodec.None:
+                if (input.Length != output.Length)
+                    throw new XisfException($"Stored subblock is {input.Length} bytes, expected {output.Length}.");
+
+                input.CopyTo(output);
+                decompressedSize = input.Length;
+                break;
+
             case CompressionCodec.Lz4 or CompressionCodec.Lz4Hc:
-                output = new byte[uncompressedSize];
-                LZ4Codec.PartialDecode(input, output);
+                decompressedSize = LZ4Codec.PartialDecode(input, output);
                 break;
 
             case CompressionCodec.Zlib:
-                output = new byte[uncompressedSize];
                 unsafe
                 {
                     // UnmanagedMemoryStream to avoid a copy of the input data to a byte[]
@@ -272,13 +235,13 @@ internal static class XisfUtil
                         zlibStream.ReadExactly(output);
                     }
                 }
+                decompressedSize = output.Length;
                 break;
 
             case CompressionCodec.Zstd:
-                output = new byte[uncompressedSize];
                 using (var zstd = new Decompressor())
                 {
-                    zstd.Unwrap(input, output);
+                    decompressedSize = zstd.Unwrap(input, output);
                 }
                 break;
 
@@ -286,7 +249,56 @@ internal static class XisfUtil
                 throw new NotImplementedException($"Compression codec {codec} is not supported");
         }
 
-        return output;
+        if (decompressedSize != output.Length)
+            throw new XisfException($"Decompressed subblock is {decompressedSize} bytes, expected {output.Length}.");
+    }
+
+    internal static IncrementalHash CreateIncrementalHash(ChecksumAlgorithm algorithm)
+    {
+        var hashName = algorithm switch
+        {
+            ChecksumAlgorithm.SHA1 => HashAlgorithmName.SHA1,
+            ChecksumAlgorithm.SHA256 => HashAlgorithmName.SHA256,
+            ChecksumAlgorithm.SHA512 => HashAlgorithmName.SHA512,
+            ChecksumAlgorithm.SHA3_256 => HashAlgorithmName.SHA3_256,
+            ChecksumAlgorithm.SHA3_512 => HashAlgorithmName.SHA3_512,
+            _ => throw new XisfException($"Unsupported checksum algorithm: {algorithm}"),
+        };
+
+        return IncrementalHash.CreateHash(hashName);
+    }
+
+    /// <summary>
+    /// Gets the algorithm name used in <c>checksum</c> attributes.
+    /// </summary>
+    internal static string ChecksumAlgorithmName(ChecksumAlgorithm algorithm) => algorithm switch
+    {
+        ChecksumAlgorithm.SHA1 => "sha1",
+        ChecksumAlgorithm.SHA256 => "sha256",
+        ChecksumAlgorithm.SHA512 => "sha512",
+        ChecksumAlgorithm.SHA3_256 => "sha3-256",
+        ChecksumAlgorithm.SHA3_512 => "sha3-512",
+        _ => throw new NotImplementedException($"Unsupported checksum algorithm: {algorithm}"),
+    };
+
+    /// <summary>
+    /// Gets the length of a digest in hexadecimal characters.
+    /// </summary>
+    internal static int ChecksumHexLength(ChecksumAlgorithm algorithm) => algorithm switch
+    {
+        ChecksumAlgorithm.SHA1 => 40,
+        ChecksumAlgorithm.SHA256 or ChecksumAlgorithm.SHA3_256 => 64,
+        ChecksumAlgorithm.SHA512 or ChecksumAlgorithm.SHA3_512 => 128,
+        _ => throw new NotImplementedException($"Unsupported checksum algorithm: {algorithm}"),
+    };
+
+    internal static string ToLowerHex(ReadOnlySpan<byte> bytes)
+    {
+#if NET10_0_OR_GREATER
+        return Convert.ToHexStringLower(bytes);
+#else
+        return Convert.ToHexString(bytes).ToLowerInvariant();
+#endif
     }
 
     internal static byte[] HashData(ReadOnlySpan<byte> data, ChecksumAlgorithm algorithm)

@@ -1,4 +1,5 @@
 ﻿using System.Globalization;
+using System.Buffers;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using System.Xml;
@@ -46,6 +47,38 @@ public sealed class XisfReader : IDisposable, IAsyncDisposable
     /// Gets or sets a log handler to invoke when a warning or error occurs.
     /// </summary>
     public Action<string, Exception?>? LogHandler { get; set; }
+
+    /// <summary>
+    /// Gets or sets the memory, in bytes, that decoding a byte-shuffled LZ4 image may use. The default is 1 GiB.
+    /// </summary>
+    /// <remarks>
+    /// LZ4 subblocks can only be decoded whole, and reversing byte shuffling reads several subblocks at once.
+    /// When that would exceed this limit, the image is first decompressed to a temporary file in
+    /// <see cref="TempDirectory"/>. Other codecs decode incrementally and are not affected.
+    /// </remarks>
+    public long DecodeMemoryLimit
+    {
+        get => DecodeOptions.LaneMemoryLimit;
+        set
+        {
+            ArgumentOutOfRangeException.ThrowIfNegative(value);
+            DecodeOptions = DecodeOptions with { LaneMemoryLimit = value };
+        }
+    }
+
+    /// <summary>
+    /// Gets or sets the directory for temporary files created while decoding, or null to use the system temporary directory.
+    /// </summary>
+    public string? TempDirectory
+    {
+        get => DecodeOptions.TempDirectory;
+        set => DecodeOptions = DecodeOptions with { TempDirectory = value };
+    }
+
+    /// <summary>
+    /// Gets or sets the parameters used to decode data blocks.
+    /// </summary>
+    internal BlockDecodeOptions DecodeOptions { get; set; } = BlockDecodeOptions.Default;
 
     internal string XmlText { get; private set; } = string.Empty;
 
@@ -197,8 +230,126 @@ public sealed class XisfReader : IDisposable, IAsyncDisposable
         ArgumentOutOfRangeException.ThrowIfGreaterThanOrEqual(index, _images.Count);
 
         var image = _images[index];
-        await image.DataBlock.LoadData(_stream, cancellationToken);
+
+        if (image.RequiresStreaming)
+            throw new XisfException(
+                $"Image {index} is {image.DataSize} bytes, which exceeds the maximum in-memory size of {Array.MaxLength} bytes. " +
+                $"Use {nameof(ReadImageRowsAsync)} or {nameof(OpenImageDataAsync)} instead.");
+
+        await image.DataBlock.LoadData(_stream, DecodeOptions, cancellationToken);
         return image;
+    }
+
+    /// <summary>
+    /// Opens a stream over the pixel data of the image at the specified index without loading it into memory.
+    /// </summary>
+    /// <remarks>
+    /// The data is decompressed, unshuffled and converted to native byte order as it is read, laid out as
+    /// described by the image's <see cref="XisfImage.PixelStorage"/>. The stream is forward-only and reads
+    /// from this reader's underlying stream, so the reader must not be used until the returned stream is disposed.
+    /// The block checksum, if any, is verified before this method returns.
+    /// </remarks>
+    /// <param name="index">The zero-based index of the image.</param>
+    /// <param name="cancellationToken">A token to monitor for cancellation requests.</param>
+    /// <returns>A read-only stream of <see cref="XisfImage.DataSize"/> bytes.</returns>
+    public async Task<Stream> OpenImageDataAsync(int index, CancellationToken cancellationToken = default)
+    {
+        var image = await GetImageHeaderAsync(index, cancellationToken);
+        return await OpenImageDataAsync(image, cancellationToken);
+    }
+
+    /// <summary>
+    /// Streams the image at the specified index row by row without loading it into memory.
+    /// </summary>
+    /// <remarks>
+    /// Rows are delivered in storage order: for <see cref="PixelStorage.Planar"/> images, every row of channel 0,
+    /// then every row of channel 1, and so on. See <see cref="XisfRowAction{T}"/> for the layout of each row.
+    /// The block checksum, if any, is verified before the first row is delivered.
+    /// </remarks>
+    /// <typeparam name="T">The sample type, which must match the image's <see cref="XisfImage.SampleFormat"/>.</typeparam>
+    /// <param name="index">The zero-based index of the image.</param>
+    /// <param name="onRow">Invoked once per row.</param>
+    /// <param name="cancellationToken">A token to monitor for cancellation requests.</param>
+    public async Task ReadImageRowsAsync<T>(int index, XisfRowAction<T> onRow, CancellationToken cancellationToken = default)
+        where T : unmanaged
+    {
+        ArgumentNullException.ThrowIfNull(onRow);
+
+        var image = await GetImageHeaderAsync(index, cancellationToken);
+
+        if (XisfUtil.ToSampleFormat<T>() != image.SampleFormat)
+            throw new ArgumentException(
+                $"Sample type {typeof(T).Name} does not match the image sample format {image.SampleFormat}.", nameof(T));
+
+        bool planar = image.PixelStorage == PixelStorage.Planar;
+        int passes = planar ? image.Channels : 1;
+        int rowBytes = checked((planar ? image.Width : image.Width * image.Channels) * Unsafe.SizeOf<T>());
+        int rowsPerBatch = Math.Clamp(DecodeOptions.ChunkSize / rowBytes, 1, image.Height);
+
+        await using var data = await OpenImageDataAsync(image, cancellationToken);
+        byte[] buffer = ArrayPool<byte>.Shared.Rent(checked(rowsPerBatch * rowBytes));
+
+        try
+        {
+            for (int channel = 0; channel < passes; channel++)
+            {
+                for (int y = 0; y < image.Height; y += rowsPerBatch)
+                {
+                    int rows = Math.Min(rowsPerBatch, image.Height - y);
+                    await data.ReadExactlyAsync(buffer.AsMemory(0, rows * rowBytes), cancellationToken);
+                    InvokeRows(buffer.AsSpan(0, rows * rowBytes), rowBytes, channel, y, onRow);
+                }
+            }
+        }
+        finally
+        {
+            ArrayPool<byte>.Shared.Return(buffer);
+        }
+    }
+
+    private static void InvokeRows<T>(ReadOnlySpan<byte> rows, int rowBytes, int channel, int firstRow, XisfRowAction<T> onRow)
+        where T : unmanaged
+    {
+        for (int offset = 0, y = firstRow; offset < rows.Length; offset += rowBytes, y++)
+        {
+            onRow(channel, y, MemoryMarshal.Cast<byte, T>(rows.Slice(offset, rowBytes)));
+        }
+    }
+
+    private async Task<XisfImage> GetImageHeaderAsync(int index, CancellationToken cancellationToken)
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        ArgumentOutOfRangeException.ThrowIfNegative(index);
+
+        await ReadHeaderAsync(cancellationToken);
+
+        ArgumentOutOfRangeException.ThrowIfGreaterThanOrEqual(index, _images.Count);
+        return _images[index];
+    }
+
+    private static MemoryStream AsReadOnlyStream(ReadOnlyMemory<byte> data)
+    {
+        return MemoryMarshal.TryGetArray(data, out var segment)
+            ? new MemoryStream(segment.Array!, segment.Offset, segment.Count, writable: false)
+            : new MemoryStream(data.ToArray(), writable: false);
+    }
+
+    private async Task<Stream> OpenImageDataAsync(XisfImage image, CancellationToken cancellationToken)
+    {
+        var block = image.DataBlock;
+
+        // Data that is already in memory, either loaded earlier or set by the caller, is served directly.
+        Stream data = block.HasData
+            ? AsReadOnlyStream(block.Data)
+            : await block.OpenDecodedStreamAsync(_stream, DecodeOptions, cancellationToken);
+
+        if (data.Length != image.DataSize)
+        {
+            await data.DisposeAsync();
+            throw new XisfException($"Image data is {data.Length} bytes, but its geometry and sample format require {image.DataSize} bytes.");
+        }
+
+        return data;
     }
 
     /// <summary>
@@ -255,7 +406,7 @@ public sealed class XisfReader : IDisposable, IAsyncDisposable
         if (image.Thumbnail is null)
             return null;
 
-        await image.Thumbnail.DataBlock.LoadData(_stream, cancellationToken);
+        await image.Thumbnail.DataBlock.LoadData(_stream, DecodeOptions, cancellationToken);
         return image.Thumbnail;
     }
 
@@ -373,6 +524,7 @@ public sealed class XisfReader : IDisposable, IAsyncDisposable
         image.ColorSpace = ParseColorSpace(element);
         image.Orientation = ParseOrientation(element);
         image.DataBlock = ParseDataBlock(element);
+        image.DataBlock.ElementSize = XisfUtil.SampleFormatSize(image.SampleFormat);
 
         if (element.Attribute("offset")?.Value is { } offsetStr &&
             float.TryParse(offsetStr, out float offset))
@@ -496,7 +648,7 @@ public sealed class XisfReader : IDisposable, IAsyncDisposable
         if (!string.IsNullOrWhiteSpace(location))
         {
             var dataBlock = ParseDataBlock(element);
-            await dataBlock.LoadData(_stream, cancellationToken);
+            await dataBlock.LoadData(_stream, DecodeOptions, cancellationToken);
             data = dataBlock.Data;
         }
 
@@ -582,6 +734,7 @@ public sealed class XisfReader : IDisposable, IAsyncDisposable
     private InputBlock ParseDataBlock(XElement element)
     {
         InputBlock block = new();
+        block.IsBigEndian = ParseIsBigEndian(element);
 
         var location = element.Attribute("location")?.Value;
         if (string.IsNullOrWhiteSpace(location))
@@ -600,13 +753,12 @@ public sealed class XisfReader : IDisposable, IAsyncDisposable
             if (block.AttachmentPosition < _minBlockPosition)
                 throw new XisfException($"Invalid block position: {block.AttachmentPosition}");
 
-            block.AttachmentSize = int.Parse(tokens[2]);
-            if (block.AttachmentSize == 0)
+            block.AttachmentSize = long.Parse(tokens[2]);
+            if (block.AttachmentSize <= 0)
                 throw new XisfException($"Invalid block size: {block.AttachmentSize}");
 
             GetBlockCompression(block, element);
             GetBlockChecksum(block, element);
-            // TODO: Byte order
         }
         else if (tokens[0] == "inline")
         {
@@ -623,6 +775,7 @@ public sealed class XisfReader : IDisposable, IAsyncDisposable
 
             if (element.Descendants(_ns + "Data").FirstOrDefault() is { } dataElement)
             {
+                block.IsBigEndian |= ParseIsBigEndian(dataElement);
                 GetBlockEmbeddedData(block, dataElement);
             }
         }
@@ -655,7 +808,7 @@ public sealed class XisfReader : IDisposable, IAsyncDisposable
             _ => throw new XisfException($"Unsupported compression codec: {tokens[0]}")
         };
 
-        var uncompressedSize = int.Parse(tokens[1]);
+        var uncompressedSize = long.Parse(tokens[1]);
 
         int itemSize = 1;
         bool byteShuffled = tokens[0].EndsWith("+sh");
@@ -678,6 +831,21 @@ public sealed class XisfReader : IDisposable, IAsyncDisposable
         block.UncompressedSize = uncompressedSize;
         block.ItemSize = itemSize;
         block.ByteShuffling = byteShuffled;
+
+        if (element.Attribute("subblocks")?.Value is { } subblocks && !string.IsNullOrWhiteSpace(subblocks))
+        {
+            block.DeclaredSubblocks = SubblockTable.Parse(subblocks);
+        }
+    }
+
+    private static bool ParseIsBigEndian(XElement element)
+    {
+        return element.Attribute("byteOrder")?.Value switch
+        {
+            null or "little" => false,
+            "big" => true,
+            var value => throw new XisfException($"Invalid byteOrder attribute: {value}"),
+        };
     }
 
     private static void GetBlockChecksum(InputBlock block, XElement element)
@@ -708,21 +876,9 @@ public sealed class XisfReader : IDisposable, IAsyncDisposable
     {
         GetBlockCompression(block, element);
         GetBlockChecksum(block, element);
-        // TODO: Byte order
 
         var data = XisfUtil.Decode(element.Value, encoding);
-        block.AttachmentSize = data.Length;
-
-        if (block.IsCompressed)
-        {
-            block.SetCompressedData(data);
-        }
-        else
-        {
-            block.SetData(data);
-            block.VerifyChecksum();
-            // TODO: Byte order
-        }
+        block.SetStoredData(data);
     }
 
     private static void GetBlockEmbeddedData(InputBlock block, XElement element)

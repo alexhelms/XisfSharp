@@ -30,6 +30,42 @@ public record XisfWriterOptions
     public bool ShuffleBytes { get; set; }
 
     /// <summary>
+    /// Gets or sets the size in bytes of the uncompressed subblocks that compressed blocks are divided into,
+    /// or null to divide only blocks too large for the codec.
+    /// </summary>
+    /// <remarks>
+    /// Subblocks are compressed in parallel, so smaller subblocks speed up compression at a small cost in ratio.
+    /// Divided blocks are written with a <c>subblocks</c> attribute, which the reader must support.
+    /// This option does nothing if <see cref="CompressionCodec"/> is <see cref="CompressionCodec.None"/>.
+    /// </remarks>
+    public int? SubblockSize
+    {
+        get => _subblockSize;
+        set
+        {
+            if (value is { } size)
+            {
+                ArgumentOutOfRangeException.ThrowIfLessThan(size, 1);
+                ArgumentOutOfRangeException.ThrowIfGreaterThan(size, OutputBlock.MaxSubblockSize);
+            }
+
+            _subblockSize = value;
+        }
+    }
+
+    private int? _subblockSize;
+
+    /// <summary>
+    /// Gets or sets the directory for temporary files, or null to use the system temporary directory.
+    /// </summary>
+    /// <remarks>
+    /// Temporary files are used when an image streamed from a non-seekable stream is written with
+    /// <see cref="ShuffleBytes"/>, because shuffling reads the image data once per byte of a sample, and when
+    /// streamed images are saved to a non-seekable output, because the header is completed after the data.
+    /// </remarks>
+    public string? TempDirectory { get; set; }
+
+    /// <summary>
     /// Get or set the checksum algorithm used.
     /// Default is <see cref="ChecksumAlgorithm.None"/>.
     /// </summary>
@@ -60,7 +96,8 @@ public sealed class XisfWriter : IDisposable, IAsyncDisposable
     private readonly bool _leaveOpen;
 
     private readonly List<XisfImage> _images = [];
-    private readonly List<OutputBlock> _blocks = [];
+    private readonly List<IOutputAttachment> _blocks = [];
+    private readonly Dictionary<XisfImage, ImageDataSource> _imageSources = new(ReferenceEqualityComparer.Instance);
     private readonly XisfPropertyCollection _properties = [];
 
     private bool _disposed;
@@ -73,7 +110,7 @@ public sealed class XisfWriter : IDisposable, IAsyncDisposable
     /// </summary>
     /// <param name="filePath">The path to the XISF file to write.</param>
     public XisfWriter(string filePath)
-        : this(File.OpenWrite(filePath))
+        : this(File.Create(filePath))
     {
     }
 
@@ -83,7 +120,7 @@ public sealed class XisfWriter : IDisposable, IAsyncDisposable
     /// <param name="filePath">The path to the XISF file to write.</param>
     /// <param name="options">The options to use when writing the XISF file.</param>
     public XisfWriter(string filePath, XisfWriterOptions options)
-        : this(File.OpenWrite(filePath), options)
+        : this(File.Create(filePath), options)
     {
     }
 
@@ -191,6 +228,68 @@ public sealed class XisfWriter : IDisposable, IAsyncDisposable
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
         
+        _images.Add(image);
+    }
+
+    /// <summary>
+    /// Adds an image whose pixel data is supplied row by row while the file is saved, without holding it in memory.
+    /// </summary>
+    /// <remarks>
+    /// The image supplies the geometry, pixel storage and metadata; its <see cref="XisfImage.Data"/> is ignored and
+    /// its <see cref="XisfImage.SampleFormat"/> is set from <typeparamref name="T"/>. Rows are requested in storage
+    /// order, and once per byte of a sample when <see cref="XisfWriterOptions.ShuffleBytes"/> is enabled with compression.
+    /// </remarks>
+    /// <typeparam name="T">The sample type of the image.</typeparam>
+    /// <param name="image">The image to add. Create it with the image dimensions and no data.</param>
+    /// <param name="source">Supplies each row of the image.</param>
+    public void AddImage<T>(XisfImage image, XisfRowSource<T> source)
+        where T : unmanaged
+    {
+        ArgumentNullException.ThrowIfNull(source);
+        AddStreamedImage<T>(image, img => new RowImageDataSource<T>(source, img));
+    }
+
+    /// <summary>
+    /// Adds an image whose pixel data is read from a stream while the file is saved, without holding it in memory.
+    /// </summary>
+    /// <remarks>
+    /// The stream must supply <see cref="XisfImage.DataSize"/> bytes from its current position, in storage order and
+    /// native byte order. The image supplies the geometry, pixel storage and metadata; its <see cref="XisfImage.Data"/>
+    /// is ignored and its <see cref="XisfImage.SampleFormat"/> is set from <typeparamref name="T"/>. When
+    /// <see cref="XisfWriterOptions.ShuffleBytes"/> is enabled with compression, a non-seekable stream is first copied
+    /// to a temporary file. The stream is not disposed by the writer.
+    /// </remarks>
+    /// <typeparam name="T">The sample type of the image.</typeparam>
+    /// <param name="image">The image to add. Create it with the image dimensions and no data.</param>
+    /// <param name="source">The stream supplying the pixel data.</param>
+    public void AddImage<T>(XisfImage image, Stream source)
+        where T : unmanaged
+    {
+        ArgumentNullException.ThrowIfNull(source);
+
+        if (!source.CanRead)
+            throw new ArgumentException("Stream must be readable.", nameof(source));
+
+        AddStreamedImage<T>(image, img =>
+        {
+            if (source.CanSeek && source.Length - source.Position < img.DataSize)
+                throw new ArgumentException($"Stream has fewer than the {img.DataSize} bytes the image requires.", nameof(source));
+
+            return new StreamImageDataSource(source, img.DataSize, ownsStream: false);
+        });
+    }
+
+    private void AddStreamedImage<T>(XisfImage image, Func<XisfImage, ImageDataSource> createSource)
+        where T : unmanaged
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        ArgumentNullException.ThrowIfNull(image);
+
+        if (image.Width < 1 || image.Height < 1 || image.Channels < 1)
+            throw new ArgumentException("Image must have a width, height and channel count of at least 1.", nameof(image));
+
+        image.SampleFormat = XisfUtil.ToSampleFormat<T>();
+        _imageSources[image] = createSource(image);
         _images.Add(image);
     }
 
@@ -303,14 +402,160 @@ public sealed class XisfWriter : IDisposable, IAsyncDisposable
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
 
+        if (_imageSources.Count > 0)
+        {
+            await SaveWithStreamedImagesAsync(cancellationToken);
+            return;
+        }
+
         await WriteHeader(cancellationToken);
         await WriteImageBlocks(cancellationToken);
     }
 
-    private async Task WriteHeader(CancellationToken cancellationToken)
+    /// <summary>
+    /// Writes the file when some image data is streamed and its encoded size is unknown until it has been written.
+    /// </summary>
+    /// <remarks>
+    /// Header space is reserved for the largest values the unknown attributes can take, the blocks are written after it,
+    /// and the header is then rewritten with the real values. The unused part of the reserved space is left as zeros,
+    /// which XISF allows between the header and the first attachment.
+    /// </remarks>
+    private async Task SaveWithStreamedImagesAsync(CancellationToken cancellationToken)
     {
-        byte[] signature = "XISF0100\0\0\0\0\0\0\0\0"u8.ToArray();
+        if (_stream.CanSeek)
+        {
+            await WriteWithReservedHeaderAsync(_stream, cancellationToken);
+            return;
+        }
 
+        // The header is rewritten after the data, so a non-seekable output receives a copy of a complete temporary file.
+        string path = Path.Combine(_options.TempDirectory ?? Path.GetTempPath(), $"xisfsharp-{Guid.NewGuid():N}.tmp");
+        await using var tempFile = new FileStream(
+            path,
+            FileMode.CreateNew,
+            FileAccess.ReadWrite,
+            FileShare.None,
+            bufferSize: 1024 * 1024,
+            FileOptions.DeleteOnClose | FileOptions.Asynchronous);
+
+        await WriteWithReservedHeaderAsync(tempFile, cancellationToken);
+
+        tempFile.Position = 0;
+        await tempFile.CopyToAsync(_stream, cancellationToken);
+    }
+
+    private async Task WriteWithReservedHeaderAsync(Stream output, CancellationToken cancellationToken)
+    {
+        string xml = await BuildHeaderXmlAsync(cancellationToken);
+        var streamedBlocks = _blocks.OfType<StreamedOutputBlock>().ToList();
+
+        string worstCaseXml = xml;
+        foreach (var block in streamedBlocks)
+        {
+            worstCaseXml = worstCaseXml
+                .Replace(block.SizeToken, block.MaxBlockSize.ToString(CultureInfo.InvariantCulture))
+                .Replace(block.SubblocksToken, block.WorstCaseSubblocksAttribute)
+                .Replace(block.ChecksumToken, block.WorstCaseChecksumAttribute);
+        }
+
+        var (reservedSize, _, _) = LayoutHeader(worstCaseXml, index => _blocks[index].MaxBlockSize, minimumHeaderSize: 0);
+
+        long headerStart = output.Position;
+        await WriteZerosAsync(output, reservedSize, cancellationToken);
+
+        var blockSizes = new long[_blocks.Count];
+        for (int i = 0; i < _blocks.Count; i++)
+        {
+            await WriteZerosAsync(output, AlignedPosition(output.Position) - output.Position, cancellationToken);
+
+            long start = output.Position;
+            await _blocks[i].WriteDataAsync(output, cancellationToken);
+            blockSizes[i] = output.Position - start;
+        }
+
+        long end = output.Position;
+
+        foreach (var block in streamedBlocks)
+        {
+            xml = xml
+                .Replace(block.SizeToken, block.StoredSize.ToString(CultureInfo.InvariantCulture))
+                .Replace(block.SubblocksToken, block.SubblocksAttribute)
+                .Replace(block.ChecksumToken, block.ChecksumAttribute);
+        }
+
+        // Real values never need more digits than the worst case, so the layout keeps the reserved header size.
+        var (headerSize, finalXml, _) = LayoutHeader(xml, index => blockSizes[index], minimumHeaderSize: reservedSize);
+        if (headerSize != reservedSize)
+            throw new XisfException("Header does not fit in the space reserved for it.");
+
+        output.Position = headerStart;
+        await output.WriteAsync(CreateHeader(finalXml, headerSize: 16 + System.Text.Encoding.UTF8.GetByteCount(finalXml)), cancellationToken);
+        output.Position = end;
+
+        XmlText = finalXml;
+    }
+
+    /// <summary>
+    /// Places the attachments after an aligned header and substitutes their positions into the header.
+    /// </summary>
+    /// <returns>The aligned header size and the header with positions filled in.</returns>
+    private (long HeaderSize, string Xml, long[] Positions) LayoutHeader(string xml, Func<int, long> blockSize, long minimumHeaderSize)
+    {
+        long headerSize = AlignedPosition(Math.Max(16 + System.Text.Encoding.UTF8.GetByteCount(xml), minimumHeaderSize));
+
+        // Positions grow with the header, so the header size only increases and settles within a few iterations.
+        for (int iteration = 0; iteration < 10; iteration++)
+        {
+            var positions = new long[_blocks.Count];
+            long offset = headerSize;
+            string positioned = xml;
+
+            for (int i = 0; i < _blocks.Count; i++)
+            {
+                positions[i] = offset;
+                positioned = positioned.Replace(_blocks[i].AttachmentPosition, $"attachment:{offset}");
+                offset = AlignedPosition(offset + blockSize(i));
+            }
+
+            long required = AlignedPosition(Math.Max(16 + System.Text.Encoding.UTF8.GetByteCount(positioned), minimumHeaderSize));
+            if (required == headerSize)
+                return (headerSize, positioned, positions);
+
+            headerSize = required;
+        }
+
+        throw new XisfException("Failed to stabilize header size after maximum iterations.");
+    }
+
+    private static byte[] CreateHeader(string xml, long headerSize)
+    {
+        byte[] xmlBytes = System.Text.Encoding.UTF8.GetBytes(xml);
+        byte[] header = new byte[headerSize];
+        "XISF0100"u8.CopyTo(header);
+        BinaryPrimitives.WriteUInt32LittleEndian(header.AsSpan(8, 4), (uint)xmlBytes.Length);
+        xmlBytes.CopyTo(header, 16);
+        return header;
+    }
+
+    private static async Task WriteZerosAsync(Stream output, long count, CancellationToken cancellationToken)
+    {
+        ReadOnlyMemory<byte> zeros = new byte[(int)Math.Min(Math.Max(count, 0), 1024 * 1024)];
+
+        while (count > 0)
+        {
+            int chunk = (int)Math.Min(count, zeros.Length);
+            await output.WriteAsync(zeros[..chunk], cancellationToken);
+            count -= chunk;
+        }
+    }
+
+    private static long AlignedPosition(long unalignedPosition)
+    {
+        return (unalignedPosition + AlignedBlockSize - 1) / AlignedBlockSize * AlignedBlockSize;
+    }
+
+    private async Task<string> BuildHeaderXmlAsync(CancellationToken cancellationToken)
+    {
         XNamespace xsi = "http://www.w3.org/2001/XMLSchema-instance";
 
         var root = new XElement(_ns + "xisf",
@@ -332,31 +577,35 @@ public sealed class XisfWriter : IDisposable, IAsyncDisposable
             AppendImage(root, image);
         }
 
+        using var stringWriter = new StringWriter();
+        var xmlSettings = new XmlWriterSettings
+        {
+            Async = true,
+            Encoding = System.Text.Encoding.UTF8,
+            OmitXmlDeclaration = false,
+            Indent = false,
+            NewLineChars = "\n",
+            NewLineHandling = NewLineHandling.Entitize,
+        };
+
+        await using (var xmlWriter = XmlWriter.Create(stringWriter, xmlSettings))
+        {
+            await doc.WriteToAsync(xmlWriter, cancellationToken);
+        }
+
+        await stringWriter.FlushAsync(cancellationToken);
+        return stringWriter.ToString();
+    }
+
+    private async Task WriteHeader(CancellationToken cancellationToken)
+    {
+        byte[] signature = "XISF0100\0\0\0\0\0\0\0\0"u8.ToArray();
+
         long prevAlignedHeaderSize = 0;
         int maxIterations = 10;
         int iteration = 0;
 
-        string xml;
-        using (var stringWriter = new StringWriter())
-        {
-            var xmlSettings = new XmlWriterSettings
-            {
-                Async = true,
-                Encoding = System.Text.Encoding.UTF8,
-                OmitXmlDeclaration = false,
-                Indent = false,
-                NewLineChars = "\n",
-                NewLineHandling = NewLineHandling.Entitize,
-            };
-
-            await using (var xmlWriter = XmlWriter.Create(stringWriter, xmlSettings))
-            {
-                await doc.WriteToAsync(xmlWriter, cancellationToken);
-            }
-
-            await stringWriter.FlushAsync();
-            xml = stringWriter.ToString();
-        }
+        string xml = await BuildHeaderXmlAsync(cancellationToken);
 
         while (iteration++ < maxIterations)
         {
@@ -385,7 +634,7 @@ public sealed class XisfWriter : IDisposable, IAsyncDisposable
             {
                 string attachmentPosition = $"attachment:{attachmentOffset}";
                 xml = xml.Replace(block.AttachmentPosition, attachmentPosition);
-                attachmentOffset = AlignedPosition(attachmentOffset + block.BlockSize);
+                attachmentOffset = AlignedPosition(attachmentOffset + block.MaxBlockSize);
                 block.AttachmentPosition = attachmentPosition;
             }
         }
@@ -396,16 +645,6 @@ public sealed class XisfWriter : IDisposable, IAsyncDisposable
         }
 
         await _stream.WriteAsync(_header, cancellationToken);
-
-        static long AlignedPosition(long unalignedPosition)
-        {
-            long alignedPosition = AlignedBlockSize * (unalignedPosition/ AlignedBlockSize);
-            if (alignedPosition < unalignedPosition)
-            {
-                alignedPosition += AlignedBlockSize;
-            }
-            return alignedPosition;
-        }
     }
 
     private async Task WriteImageBlocks(CancellationToken cancellationToken)
@@ -480,7 +719,14 @@ public sealed class XisfWriter : IDisposable, IAsyncDisposable
             imageElement.Add(keywordElement);
         }
 
-        NewBlock(imageElement, image.Data, XisfUtil.SampleFormatSize(image.SampleFormat), canInline: false);
+        if (_imageSources.TryGetValue(image, out var source))
+        {
+            NewStreamedBlock(imageElement, source, XisfUtil.SampleFormatSize(image.SampleFormat));
+        }
+        else
+        {
+            NewBlock(imageElement, image.Data, XisfUtil.SampleFormatSize(image.SampleFormat), canInline: false);
+        }
 
         root.Add(imageElement);
 
@@ -649,6 +895,36 @@ public sealed class XisfWriter : IDisposable, IAsyncDisposable
         }
     }
 
+    /// <summary>
+    /// Adds the attributes of a streamed image block, with placeholders for the values known only once it is written.
+    /// </summary>
+    private void NewStreamedBlock(XElement element, ImageDataSource source, int itemSize)
+    {
+        var block = new StreamedOutputBlock(
+            source,
+            _options.CompressionCodec,
+            itemSize,
+            _options.ShuffleBytes,
+            _options.SubblockSize ?? StreamedOutputBlock.DefaultSubblockSize,
+            _options.ChecksumAlgorithm,
+            _options.TempDirectory);
+
+        if (block.IsCompressed)
+        {
+            // Streamed blocks always declare their subblocks, which lets a lone subblock that did not shrink be stored verbatim.
+            element.Add(new XAttribute("compression", block.CompressionAttribute));
+            element.Add(new XAttribute("subblocks", block.SubblocksToken));
+        }
+
+        if (block.HasChecksum)
+        {
+            element.Add(new XAttribute("checksum", block.ChecksumToken));
+        }
+
+        element.Add(new XAttribute("location", $"{block.AttachmentPosition}:{block.SizeToken}"));
+        _blocks.Add(block);
+    }
+
     internal void NewBlock(XElement element, ReadOnlyMemory<byte> blockData, int itemSize = 1, bool canInline = true)
     {
         OutputBlock block = new(blockData);
@@ -659,9 +935,11 @@ public sealed class XisfWriter : IDisposable, IAsyncDisposable
             var uncompressedSize = blockData.Length;
             if (uncompressedSize >= 64)
             {
-                block.CompressData(_options.CompressionCodec, itemSize, _options.ShuffleBytes);
+                block.CompressData(_options.CompressionCodec, itemSize, _options.ShuffleBytes, _options.SubblockSize ?? OutputBlock.MaxSubblockSize);
             }
         }
+
+        block.ComputeChecksum(_options.ChecksumAlgorithm);
 
         var blockSize = block.BlockSize;
         if (blockSize <= MaxInlineBlockSize)
@@ -702,6 +980,12 @@ public sealed class XisfWriter : IDisposable, IAsyncDisposable
             if (!string.IsNullOrEmpty(compressionAttr))
             {
                 element.Add(new XAttribute("compression", compressionAttr));
+            }
+
+            var subblocksAttr = block.GetSubblocksAttribute();
+            if (!string.IsNullOrEmpty(subblocksAttr))
+            {
+                element.Add(new XAttribute("subblocks", subblocksAttr));
             }
         }
 

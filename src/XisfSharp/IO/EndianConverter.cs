@@ -6,6 +6,44 @@ namespace XisfSharp.IO;
 
 internal static class EndianConverter
 {
+    /// <summary>
+    /// Reverses the byte order of every element in <paramref name="data"/> in place.
+    /// </summary>
+    /// <param name="data">Bytes of a sequence of elements. The length must be a multiple of <paramref name="elementSize"/>.</param>
+    /// <param name="elementSize">Size in bytes of each element: 1, 2, 4 or 8.</param>
+    internal static void ReverseEndiannessInPlace(Span<byte> data, int elementSize)
+    {
+        if (elementSize is not (1 or 2 or 4 or 8))
+            throw new ArgumentOutOfRangeException(nameof(elementSize), elementSize, "Element size must be 1, 2, 4 or 8.");
+
+        if (data.Length % elementSize != 0)
+            throw new ArgumentException($"Data length {data.Length} is not a multiple of the element size {elementSize}.", nameof(data));
+
+        switch (elementSize)
+        {
+            case 1:
+                break;
+
+            case 2:
+                var shorts = MemoryMarshal.Cast<byte, ushort>(data);
+                BinaryPrimitives.ReverseEndianness(shorts, shorts);
+                break;
+
+            case 4:
+                var ints = MemoryMarshal.Cast<byte, uint>(data);
+                BinaryPrimitives.ReverseEndianness(ints, ints);
+                break;
+
+            case 8:
+                var longs = MemoryMarshal.Cast<byte, ulong>(data);
+                BinaryPrimitives.ReverseEndianness(longs, longs);
+                break;
+
+            default:
+                throw new ArgumentOutOfRangeException(nameof(elementSize), elementSize, "Element size must be 1, 2, 4 or 8.");
+        }
+    }
+
     internal static void ReverseEndianness<T>(ReadOnlySpan<byte> source, Span<T> destination)
         where T : unmanaged
     {

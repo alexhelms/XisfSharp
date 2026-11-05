@@ -41,6 +41,26 @@ public class XisfImage
     public ReadOnlyMemory<byte> Data => DataBlock.Data;
 
     /// <summary>
+    /// Gets the size in bytes of the uncompressed image data, computed from the geometry and sample format.
+    /// </summary>
+    /// <remarks>
+    /// This value is available as soon as the XISF header has been read, before the image data is loaded.
+    /// </remarks>
+    public long DataSize => (long)Width * Height * Channels * XisfUtil.SampleFormatSize(SampleFormat);
+
+    /// <summary>
+    /// Gets a value indicating whether the image data is too large to be held in a single managed buffer.
+    /// </summary>
+    /// <remarks>
+    /// Images larger than <see cref="Array.MaxLength"/> bytes cannot be exposed through <see cref="Data"/> and
+    /// cannot be loaded with <see cref="XisfReader.ReadImageAsync(int, CancellationToken)"/>. Check this after
+    /// <see cref="XisfReader.ReadHeaderAsync(CancellationToken)"/> and read such images with
+    /// <see cref="XisfReader.ReadImageRowsAsync{T}(int, XisfRowAction{T}, CancellationToken)"/> or
+    /// <see cref="XisfReader.OpenImageDataAsync(int, CancellationToken)"/>.
+    /// </remarks>
+    public bool RequiresStreaming => DataSize > Array.MaxLength;
+
+    /// <summary>
     /// Gets or sets the type of image (for example, Light, Dark, Flat, Bias).
     /// </summary>
     public ImageType ImageType { get; set; } = ImageType.Light;
@@ -366,9 +386,8 @@ public class XisfImage
         int sampleFormatSize = XisfUtil.SampleFormatSize(sampleFormat);
         long expectedSize = (long)width * height * channels * sampleFormatSize;
 
-        if (expectedSize > int.MaxValue)
-            throw new ArgumentException($"Image size exceeds maximum supported size of {int.MaxValue} bytes.");
-
+        // Empty data describes an image without pixels, such as one whose data is streamed to or from a file,
+        // so its geometry is not limited by the maximum array size.
         if (data.Length > 0 && data.Length != expectedSize)
             throw new ArgumentException($"Data length {data.Length} does not match expected size {expectedSize}.");
 
@@ -475,8 +494,8 @@ public class XisfImage
         int sampleFormatSize = XisfUtil.SampleFormatSize(sampleFormat);
         long expectedSize = (long)width * height * channels * sampleFormatSize;
 
-        if (expectedSize > int.MaxValue)
-            throw new ArgumentException($"Image size exceeds maximum supported size of {int.MaxValue} bytes.");
+        if (expectedSize > Array.MaxLength)
+            throw new ArgumentException($"Image size exceeds maximum supported size of {Array.MaxLength} bytes.");
 
         byte[] data = new byte[expectedSize];
         Span<T> typedSpan = MemoryMarshal.Cast<byte, T>(data.AsSpan());
@@ -503,18 +522,21 @@ public class XisfImage
         if (channelData.Length == 0)
             throw new ArgumentException("At least one channel is required.", nameof(channelData));
 
-        int pixelCount = width * height;
+        long pixelCount = (long)width * height;
         for (int i = 0; i < channelData.Length; i++)
         {
             if (channelData[i].Length != pixelCount)
-                throw new ArgumentException($"Channel {i} length {channelData[i].Length} does not match expeted {pixelCount}.");
+                throw new ArgumentException($"Channel {i} length {channelData[i].Length} does not match expected {pixelCount}.");
         }
+
+        // Every channel array has exactly pixelCount elements, so it fits in an int.
+        int channelLength = (int)pixelCount;
 
         SetData<T>(width, height, channelData.Length, span =>
         {
             for (int i = 0; i < channelData.Length; i++)
             {
-                channelData[i].AsSpan().CopyTo(span.Slice(i * pixelCount, pixelCount));
+                channelData[i].AsSpan().CopyTo(span.Slice(i * channelLength, channelLength));
             }
         });
     }
@@ -535,13 +557,13 @@ public class XisfImage
     public void SetData<T>(int width, int height, ReadOnlySpan<T> channel0, ReadOnlySpan<T> channel1, ReadOnlySpan<T> channel2)
         where T : unmanaged
     {
-        static void ValidateChannelLength<U>(ReadOnlySpan<U> channel, int expected, int channelIndex)
+        static void ValidateChannelLength<U>(ReadOnlySpan<U> channel, long expected, int channelIndex)
         {
             if (channel.Length != expected)
                 throw new ArgumentException($"Channel {channelIndex} length {channel.Length} does not match expected {expected}.");
         }
 
-        int pixelCount = width * height;
+        long pixelCount = (long)width * height;
         ValidateChannelLength(channel0, pixelCount, 0);
         ValidateChannelLength(channel1, pixelCount, 1);
         ValidateChannelLength(channel2, pixelCount, 2);
@@ -550,16 +572,17 @@ public class XisfImage
         int sampleFormatSize = XisfUtil.SampleFormatSize(sampleFormat);
         long expectedSize = (long)width * height * 3 * sampleFormatSize;
 
-        if (expectedSize > int.MaxValue)
-            throw new ArgumentException($"Image size exceeds maximum supported size of {int.MaxValue} bytes.");
+        if (expectedSize > Array.MaxLength)
+            throw new ArgumentException($"Image size exceeds maximum supported size of {Array.MaxLength} bytes.");
 
         byte[] data = new byte[expectedSize];
         Span<T> span = MemoryMarshal.Cast<byte, T>(data.AsSpan());
 
         // I'd like to do SetData<T>(..., span => { ... }) but Span cannot be captured in a closure.
-        channel0.CopyTo(span.Slice(0, pixelCount));
-        channel1.CopyTo(span.Slice(1 * pixelCount, pixelCount));
-        channel2.CopyTo(span.Slice(2 * pixelCount, pixelCount));
+        int channelLength = (int)pixelCount;
+        channel0.CopyTo(span.Slice(0, channelLength));
+        channel1.CopyTo(span.Slice(1 * channelLength, channelLength));
+        channel2.CopyTo(span.Slice(2 * channelLength, channelLength));
 
         SetData(data, width, height, 3, sampleFormat);
     }

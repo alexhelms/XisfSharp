@@ -1,19 +1,23 @@
-﻿using System.Security.Cryptography;
+﻿using System.Buffers;
+using System.Runtime.InteropServices;
+using System.Security.Cryptography;
 
 namespace XisfSharp.IO;
 
 internal class InputBlock
 {
+    private const int ChecksumChunkSize = 1024 * 1024;
+
     private Memory<byte> _data;
-    private Memory<byte> _compressedData;
+    private Memory<byte> _storedData;
 
-    public int CompressedSize { get; set; }
+    public long CompressedSize { get; set; }
 
-    public int UncompressedSize { get; set; }
+    public long UncompressedSize { get; set; }
 
     public long AttachmentPosition { get; set; }
 
-    public int AttachmentSize { get; set; }
+    public long AttachmentSize { get; set; }
 
     public CompressionCodec CompressionCodec { get; set; }
 
@@ -21,147 +25,198 @@ internal class InputBlock
 
     public int ItemSize { get; set; }
 
+    /// <summary>
+    /// Gets or sets the subblock layout declared by the <c>subblocks</c> attribute, or null when the attribute is absent.
+    /// </summary>
+    public SubblockTable? DeclaredSubblocks { get; set; }
+
+    /// <summary>
+    /// Gets or sets a value indicating whether the uncompressed data is serialized in big-endian byte order.
+    /// </summary>
+    public bool IsBigEndian { get; set; }
+
+    /// <summary>
+    /// Gets or sets the size in bytes of the elements stored in the block, used to convert the byte order.
+    /// </summary>
+    public int ElementSize { get; set; } = 1;
+
     public ChecksumAlgorithm ChecksumAlgorithm { get; set; }
 
     public string Checksum { get; set; } = string.Empty;
 
     public bool ChecksumVerified { get; private set; }
 
+    /// <summary>
+    /// Gets the decoded contents of the block once loaded, or data supplied with <see cref="SetData"/>.
+    /// </summary>
     public ReadOnlyMemory<byte> Data => _data;
-
-    public ReadOnlyMemory<byte> CompressedData => _compressedData;
-
-    public bool IsValid => AttachmentPosition > 0 || HasData || HasCompressedData;
 
     public bool IsAttachment => AttachmentPosition > 0;
 
     public bool IsCompressed => CompressionCodec != CompressionCodec.None;
 
-    public bool HasData => !Data.IsEmpty;
+    public bool HasData => !_data.IsEmpty;
 
-    public bool HasCompressedData => !CompressedData.IsEmpty;
+    /// <summary>
+    /// Gets a value indicating whether the block's serialized bytes were embedded in the XISF header.
+    /// </summary>
+    public bool HasStoredData => !_storedData.IsEmpty;
 
     public bool HasChecksum => !string.IsNullOrEmpty(Checksum);
 
-    public bool IsEmpty => AttachmentSize <= 0 && !HasData && !HasCompressedData;
+    public bool IsEmpty => AttachmentSize <= 0 && !HasData && !HasStoredData;
 
-    public int DataSize
+    /// <summary>
+    /// Gets the size in bytes of the block as serialized.
+    /// </summary>
+    public long StoredSize => IsAttachment ? AttachmentSize : _storedData.Length;
+
+    /// <summary>
+    /// Gets the size in bytes of the block contents after decoding.
+    /// </summary>
+    public long DecodedSize
     {
         get
         {
-            if (IsEmpty)
-                return 0;
-
             if (HasData)
-                return Data.Length;
+                return _data.Length;
 
-            if (IsCompressed)
-                return CompressedData.Length;
-
-            return AttachmentSize;
+            return IsCompressed ? UncompressedSize : StoredSize;
         }
     }
 
-    public async Task LoadData(Stream stream, CancellationToken cancellationToken)
+    /// <summary>
+    /// Gets a value indicating whether the decoded block fits in a single managed buffer.
+    /// </summary>
+    public bool CanLoadIntoMemory => DecodedSize <= Array.MaxLength;
+
+    /// <summary>
+    /// Gets the subblock layout of a compressed block, validated against the declared block sizes.
+    /// </summary>
+    public SubblockTable GetSubblocks()
+    {
+        if (!IsCompressed)
+            throw new InvalidOperationException("Block is not compressed");
+
+        var subblocks = DeclaredSubblocks ?? SubblockTable.Single(CompressedSize, UncompressedSize);
+        subblocks.Validate(CompressedSize, UncompressedSize);
+        return subblocks;
+    }
+
+    public Task LoadData(Stream stream, CancellationToken cancellationToken)
+    {
+        return LoadData(stream, BlockDecodeOptions.Default, cancellationToken);
+    }
+
+    public async Task LoadData(Stream stream, BlockDecodeOptions options, CancellationToken cancellationToken)
+    {
+        if (HasData || IsEmpty)
+            return;
+
+        if (!CanLoadIntoMemory)
+            throw new XisfException(
+                $"Data block of {DecodedSize} bytes exceeds the maximum in-memory size of {Array.MaxLength} bytes.");
+
+        await using var decoded = await OpenDecodedStreamAsync(stream, options, cancellationToken);
+
+        byte[] data = GC.AllocateUninitializedArray<byte>((int)decoded.Length);
+        await decoded.ReadExactlyAsync(data, cancellationToken);
+
+        _data = data;
+        _storedData = default;
+    }
+
+    /// <summary>
+    /// Opens a stream over the decoded contents of the block without loading it into memory.
+    /// </summary>
+    /// <param name="stream">The XISF unit containing the block, used for attachments.</param>
+    /// <param name="options">Decoding parameters.</param>
+    /// <param name="cancellationToken">A token to monitor for cancellation requests.</param>
+    public Task<DecodedBlockStream> OpenDecodedStreamAsync(Stream stream, BlockDecodeOptions options, CancellationToken cancellationToken)
     {
         if (!stream.CanSeek)
-            throw new InvalidOperationException("Stream must support seeking to load attachment data");
+            throw new InvalidOperationException("Stream must support seeking to read data blocks");
 
-        // TODO: Handle data larger than 2GB (max num of elements in C# array)
-        if (AttachmentSize >= int.MaxValue)
-            throw new XisfException("Attachments larger than 2GB are not supported");
+        if (IsAttachment)
+            return DecodedBlockStream.OpenAsync(this, stream, AttachmentPosition, options, cancellationToken);
 
-        await VerifyChecksum(stream, cancellationToken);
-
-        if (!HasData)
+        if (HasStoredData)
         {
-            if (IsCompressed)
-            {
-                await Uncompress(stream, cancellationToken);
-            }
-            else
-            {
-                // Empty block that has a "location" attribute
-                if (AttachmentSize > 0)
-                {
-                    _data = new byte[AttachmentSize];
-                    stream.Seek(AttachmentPosition, SeekOrigin.Begin);
-                    await stream.ReadExactlyAsync(_data, cancellationToken);
-                }
-            }
+            var bytes = MemoryMarshal.TryGetArray<byte>(_storedData, out var segment)
+                ? segment
+                : new ArraySegment<byte>(_storedData.ToArray());
+
+            var storedStream = new MemoryStream(bytes.Array!, bytes.Offset, bytes.Count, writable: false);
+            return DecodedBlockStream.OpenAsync(this, storedStream, 0, options, cancellationToken);
         }
 
-        // TODO: Byte order
+        throw new InvalidOperationException("Block has no stored data to decode");
     }
 
+    /// <summary>
+    /// Sets decoded data directly, bypassing the stored representation.
+    /// </summary>
     public void SetData(Memory<byte> data)
     {
         _data = data;
     }
 
-    public void SetCompressedData(Memory<byte> data)
+    /// <summary>
+    /// Sets the serialized bytes of a block embedded in the XISF header and verifies its checksum.
+    /// </summary>
+    public void SetStoredData(Memory<byte> data)
     {
-        _compressedData = data;
-        CompressedSize = data.Length;
+        _storedData = data;
+
+        if (IsCompressed)
+            CompressedSize = data.Length;
+
         VerifyChecksum();
     }
 
-    private IncrementalHash CreateHash()
+    /// <summary>
+    /// Verifies the checksum of the block as stored, reading attachments from <paramref name="stream"/>.
+    /// </summary>
+    public async Task VerifyChecksumAsync(Stream stream, CancellationToken cancellationToken)
     {
-        var hashName = ChecksumAlgorithm switch
-        {
-            ChecksumAlgorithm.SHA1 => HashAlgorithmName.SHA1,
-            ChecksumAlgorithm.SHA256 => HashAlgorithmName.SHA256,
-            ChecksumAlgorithm.SHA512 => HashAlgorithmName.SHA512,
-            ChecksumAlgorithm.SHA3_256 => HashAlgorithmName.SHA3_256,
-            ChecksumAlgorithm.SHA3_512 => HashAlgorithmName.SHA3_512,
-            _ => throw new InvalidOperationException($"Unsupported checksum algorithm: {ChecksumAlgorithm}"),
-        };
-
-        return IncrementalHash.CreateHash(hashName);
-    }
-
-    private async Task VerifyChecksum(Stream stream, CancellationToken cancellationToken)
-    {
-        if (!stream.CanSeek)
-            throw new InvalidOperationException("Stream must support seeking to verify checksum");
-
         if (!HasChecksum)
             return;
 
         if (ChecksumVerified)
             return;
 
-        using var hash = CreateHash();
-        byte[] blockChecksumBytes = [];
-
-        if (IsAttachment)
-        {
-            const int ChunkSize = 4096;
-            byte[] buffer = new byte[ChunkSize];
-            long numberOfChunks = AttachmentSize / ChunkSize;
-            long lastChunkSize = AttachmentSize % ChunkSize;
-
-            stream.Seek(AttachmentPosition, SeekOrigin.Begin);
-            for (int i = 0; i <= numberOfChunks; i++)
-            {
-                long thisChunkSize = i < numberOfChunks ? ChunkSize : lastChunkSize;
-                if (thisChunkSize > 0)
-                {
-                    var chunk = buffer[..(int)thisChunkSize];
-                    await stream.ReadExactlyAsync(chunk, cancellationToken);
-                    hash.AppendData(chunk);
-                }
-            }
-
-            blockChecksumBytes = hash.GetCurrentHash();
-        }
-        else
+        if (!IsAttachment)
         {
             VerifyChecksum();
+            return;
         }
 
-        CompareAndAssertChecksum(blockChecksumBytes);
+        if (!stream.CanSeek)
+            throw new InvalidOperationException("Stream must support seeking to verify checksum");
+
+        // The digest covers the block as stored, which is the compressed data for compressed blocks.
+        using var hash = XisfUtil.CreateIncrementalHash(ChecksumAlgorithm);
+        byte[] buffer = ArrayPool<byte>.Shared.Rent(ChecksumChunkSize);
+
+        try
+        {
+            stream.Seek(AttachmentPosition, SeekOrigin.Begin);
+            long remaining = AttachmentSize;
+
+            while (remaining > 0)
+            {
+                int chunkSize = (int)Math.Min(remaining, ChecksumChunkSize);
+                await stream.ReadExactlyAsync(buffer.AsMemory(0, chunkSize), cancellationToken);
+                hash.AppendData(buffer, 0, chunkSize);
+                remaining -= chunkSize;
+            }
+        }
+        finally
+        {
+            ArrayPool<byte>.Shared.Return(buffer);
+        }
+
+        CompareAndAssertChecksum(hash.GetCurrentHash());
     }
 
     public void VerifyChecksum()
@@ -175,30 +230,16 @@ internal class InputBlock
         if (IsAttachment)
             throw new InvalidOperationException("Cannot verify attachment checksum without stream");
 
-        using var hash = CreateHash();
-        byte[] blockChecksumBytes = [];
+        if (!HasStoredData)
+            throw new InvalidOperationException("Block has no data to verify");
 
-        if (HasCompressedData)
-        {
-            hash.AppendData(CompressedData.Span);
-            blockChecksumBytes = hash.GetCurrentHash();
-        }
-        else if (HasData)
-        {
-            hash.AppendData(Data.Span);
-        }
-        else
-        {
-            throw new InvalidOperationException();
-        }
-
-        CompareAndAssertChecksum(blockChecksumBytes);
+        using var hash = XisfUtil.CreateIncrementalHash(ChecksumAlgorithm);
+        hash.AppendData(_storedData.Span);
+        CompareAndAssertChecksum(hash.GetCurrentHash());
     }
 
     private void CompareAndAssertChecksum(byte[] blockChecksumBytes)
     {
-        ChecksumVerified = true;
-
         if (blockChecksumBytes.Length == 0)
             throw new XisfException("Checksum is empty");
 
@@ -210,50 +251,7 @@ internal class InputBlock
             throw new XisfException(
                 $"Block {ChecksumAlgorithm} checksum mismatch: Expected {Checksum}, got {blockChecksum}");
         }
-    }
 
-    private async Task Uncompress(Stream stream, CancellationToken cancellationToken)
-    {
-        if (!stream.CanSeek)
-            throw new InvalidOperationException("Stream must support seeking to uncompress attachment data");
-
-        if (IsEmpty || !IsCompressed)
-            throw new InvalidOperationException();
-
-        if (!HasData)
-        {
-            await LoadCompressedData(stream, cancellationToken);
-
-            byte[] uncompressedData = XisfUtil.Decompress(CompressedData.Span, UncompressedSize, CompressionCodec);
-
-            if (ByteShuffling)
-            {
-                XisfUtil.InPlaceUnshuffle(uncompressedData.AsSpan(), ItemSize);
-            }
-
-            _data = uncompressedData;
-            _compressedData = Array.Empty<byte>();
-        }
-
-        // TODO: Byte order
-    }
-
-    private async Task LoadCompressedData(Stream stream, CancellationToken cancellationToken)
-    {
-        if (!stream.CanSeek)
-            throw new InvalidOperationException("Stream must support seeking to load compressed attachment data");
-
-        if (IsEmpty || !IsCompressed)
-            throw new InvalidOperationException();
-
-        await VerifyChecksum(stream, cancellationToken);
-
-        if (!HasCompressedData)
-        {
-            stream.Seek(AttachmentPosition, SeekOrigin.Begin);
-            byte[] compressedData = new byte[CompressedSize];
-            await stream.ReadExactlyAsync(compressedData, cancellationToken);
-            _compressedData = compressedData;
-        }
+        ChecksumVerified = true;
     }
 }

@@ -47,11 +47,11 @@ internal static class XisfBinaryReader
         stream.Position = position;
         var elements = GC.AllocateUninitializedArray<T>(count);
         var bytesPerElement = Unsafe.SizeOf<T>();
-        var buffer = ArrayPool<byte>.Shared.Rent(count * bytesPerElement);
+        var bytesToRead = checked(count * bytesPerElement);
+        var buffer = ArrayPool<byte>.Shared.Rent(bytesToRead);
 
         try
         {
-            var bytesToRead = count * bytesPerElement;
             await stream.ReadExactlyAsync(buffer.AsMemory(0, bytesToRead), cancellation);
 
             if (isLittleEndian == BitConverter.IsLittleEndian)

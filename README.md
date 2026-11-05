@@ -16,6 +16,7 @@ files, commonly used in astrophotography applications like PixInsight and N.I.N.
 - Image metadata (Color Filter Array, RGB Working Space, Display Function, Resolution)
 - Global and per-image properties
 - Thumbnail support
+- Streaming read and write for images larger than 2 GiB
 
 ## Requirements
 
@@ -212,18 +213,48 @@ image.SetData<ushort>(1920, 1080, 1, buffer =>
 });
 ```
 
+### Images Larger Than 2 GiB
+
+Most images don't need this. Only images larger than 2 GiB exceed the .NET array limit
+and must be streamed instead of loaded with `ReadImageAsync` or `SetData`.
+
+```csharp
+using var reader = new XisfReader("mosaic.xisf");
+await reader.ReadHeaderAsync();
+
+var image = reader.Images[0];
+if (image.RequiresStreaming)
+{
+    await reader.ReadImageRowsAsync<float>(0, (channel, y, row) =>
+    {
+        // Process one row of samples
+    });
+}
+```
+
+```csharp
+// Describe the image without allocating its data
+var image = new XisfImage(60000, 40000, 1);
+
+await using var writer = new XisfWriter("mosaic.xisf");
+writer.AddImage<float>(image, (channel, y, row) =>
+{
+    // Fill the row. A row can be requested more than once and must produce the same samples each time.
+});
+await writer.SaveAsync();
+```
+
+`reader.OpenImageDataAsync` and `writer.AddImage<T>(image, stream)` do the same with a `Stream` instead of rows.
+
 ## Limitations
 
 XisfSharp does not implement the complete XISF 1.0 specification.
 The following XISF features are currently not supported:
 
-- 2GiB max size for a single image
-  - C# array length limitation because data is stored as a `byte[]`.
-  - Future version of XisfSharp to explore memory mapped files, or other techniques.
 - Any Complex types
 - 128-bit types
 - Table Properties
-- Byte order (endianness)
+- Big-endian property values
 - `ICCProfile`
 - `Reference`
 - Distributed XISF units
