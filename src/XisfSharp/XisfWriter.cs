@@ -72,6 +72,13 @@ public record XisfWriterOptions
     public ChecksumAlgorithm ChecksumAlgorithm { get; set; } = ChecksumAlgorithm.None;
 
     /// <summary>
+    /// Gets or sets the name and version of the application writing the file, such as <c>MyApp 2.1.0</c>, written as the
+    /// <c>XISF:CreatorApplication</c> property, which the XISF spec requires.
+    /// Default is null, which writes the XisfSharp name and version, as <c>XISF:CreatorModule</c> does.
+    /// </summary>
+    public string? CreatorApplication { get; set; }
+
+    /// <summary>
     /// Gets or sets the inclusive lower bound for valid floating-point values, as required by the XISF spec.
     /// </summary>
     public double FloatingPointLowerBound { get; set; } = 0;
@@ -88,6 +95,14 @@ public record XisfWriterOptions
 public sealed class XisfWriter : IDisposable, IAsyncDisposable
 {
     private const int AlignedBlockSize = 4096;
+
+    private const string CreationTimeId = "XISF:CreationTime";
+    private const string CreatorApplicationId = "XISF:CreatorApplication";
+    private const string CreatorModuleId = "XISF:CreatorModule";
+    private const string CreatorOSId = "XISF:CreatorOS";
+
+    /// <summary>Metadata properties the writer always writes itself.</summary>
+    private static readonly HashSet<string> WriterProperties = [CreationTimeId, CreatorApplicationId, CreatorModuleId, CreatorOSId];
     private const int MaxInlineBlockSize = 3072;
 
     private readonly XNamespace _ns = "http://www.pixinsight.com/xisf";
@@ -307,6 +322,11 @@ public sealed class XisfWriter : IDisposable, IAsyncDisposable
     /// <summary>
     /// Adds a global property to the XISF file metadata.
     /// </summary>
+    /// <remarks>
+    /// <c>XISF:CreationTime</c>, <c>XISF:CreatorApplication</c>, <c>XISF:CreatorModule</c> and <c>XISF:CreatorOS</c>
+    /// are always written by the writer, so properties with those identifiers are ignored, which lets properties read
+    /// from another file be written back. Set <see cref="XisfWriterOptions.CreatorApplication"/> to name the application.
+    /// </remarks>
     /// <param name="property">The property to add.</param>
     public void AddProperty(XisfProperty property)
     {
@@ -670,22 +690,34 @@ public sealed class XisfWriter : IDisposable, IAsyncDisposable
     {
         var metadataElement = new XElement(_ns + "Metadata");
 
-        var creationTimeElement = SerializeProperty(
-            new XisfTimePointProperty("XISF:CreationTime", DateTimeOffset.UtcNow));
-        var creatorElement = SerializeProperty(
-            new XisfStringProperty("XISF:CreatorModule", $"XisfSharp {GitVersionInformation.MajorMinorPatch}"));
+        string module = $"XisfSharp {GitVersionInformation.MajorMinorPatch}";
 
-        metadataElement.Add(creationTimeElement);
-        metadataElement.Add(creatorElement);
+        metadataElement.Add(SerializeProperty(new XisfTimePointProperty(CreationTimeId, DateTimeOffset.UtcNow)));
+        metadataElement.Add(SerializeProperty(new XisfStringProperty(CreatorApplicationId,
+            string.IsNullOrWhiteSpace(_options.CreatorApplication) ? module : _options.CreatorApplication)));
+        metadataElement.Add(SerializeProperty(new XisfStringProperty(CreatorModuleId, module)));
+        if (CreatorOS() is { } os)
+            metadataElement.Add(SerializeProperty(new XisfStringProperty(CreatorOSId, os)));
 
         foreach (var property in _properties)
         {
+            if (WriterProperties.Contains(property.Id))
+                continue;
+
             var propertyElement = SerializeProperty(property);
             metadataElement.Add(propertyElement);
         }
 
         root.Add(metadataElement);
     }
+
+    /// <summary>The operating system, by the names the XISF spec gives, or null for one it doesn't name.</summary>
+    private static string? CreatorOS() =>
+        OperatingSystem.IsWindows() ? "Windows"
+        : OperatingSystem.IsMacOS() ? "macOS"
+        : OperatingSystem.IsLinux() ? "Linux"
+        : OperatingSystem.IsFreeBSD() ? "FreeBSD"
+        : null;
 
     private void AppendImage(XElement root, XisfImage image)
     {
