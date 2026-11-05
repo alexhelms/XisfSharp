@@ -18,12 +18,12 @@ internal sealed record BlockDecodeOptions
     public int ChunkSize { get; init; } = 4 * 1024 * 1024;
 
     /// <summary>
-    /// Gets the memory, in bytes, that decoding byte-shuffled LZ4 blocks may use for decoded subblocks.
+    /// Gets the memory, in bytes, that decoding LZ4 blocks may use for decoded subblocks.
     /// </summary>
     /// <remarks>
     /// LZ4 subblocks cannot be decoded incrementally, so every lane holds a whole decoded subblock.
     /// When the lanes would need more than this limit, the block is first decompressed to a temporary
-    /// file and the lanes read from it instead. Decoding never uses less than one subblock.
+    /// file and the lanes read from it instead, which holds one subblock only while the stream opens.
     /// </remarks>
     public long LaneMemoryLimit { get; init; } = 1L << 30;
 

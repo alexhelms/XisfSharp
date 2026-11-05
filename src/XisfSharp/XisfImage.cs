@@ -61,6 +61,15 @@ public class XisfImage
     public bool RequiresStreaming => DataSize > Array.MaxLength;
 
     /// <summary>
+    /// Gets the codec that compresses the image data in the file it was read from, or
+    /// <see cref="CompressionCodec.None"/> for uncompressed data or an image that wasn't read from a file.
+    /// </summary>
+    /// <remarks>
+    /// This value is available as soon as the XISF header has been read, before the image data is loaded.
+    /// </remarks>
+    public CompressionCodec StoredCompression => DataBlock.CompressionCodec;
+
+    /// <summary>
     /// Gets or sets the type of image (for example, Light, Dark, Flat, Bias).
     /// </summary>
     public ImageType ImageType { get; set; } = ImageType.Light;

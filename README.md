@@ -246,6 +246,9 @@ await writer.SaveAsync();
 
 `reader.OpenImageDataAsync` and `writer.AddImage<T>(image, stream)` do the same with a `Stream` instead of rows.
 
+When many images are streamed at once, `reader.DecodeChunkSize` and `reader.DecodeMemoryLimit` bound what each one holds.
+`image.StoredCompression` gives the codec as soon as the header has been read.
+
 ## Limitations
 
 XisfSharp does not implement the complete XISF 1.0 specification.

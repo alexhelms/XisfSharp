@@ -169,6 +169,41 @@ public class XisfStreamingReadTests
     }
 
     [TestMethod]
+    [DataRow(CompressionCodec.None)]
+    [DataRow(CompressionCodec.Zlib)]
+    [DataRow(CompressionCodec.Lz4)]
+    [DataRow(CompressionCodec.Lz4Hc)]
+    [DataRow(CompressionCodec.Zstd)]
+    public async Task StoredCompression_IsKnownFromTheHeader(CompressionCodec codec)
+    {
+        var image = new XisfImage();
+        image.SetData<float>(16, 16, 1, samples => samples.Fill(0.5f));
+        var path = Path.GetTempFileName();
+
+        try
+        {
+            await image.SaveAsync(path, new XisfWriterOptions { CompressionCodec = codec, ShuffleBytes = codec != CompressionCodec.None });
+
+            await using var reader = new XisfReader(path);
+            await reader.ReadHeaderAsync();
+
+            reader.Images[0].StoredCompression.ShouldBe(codec);
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
+    [TestMethod]
+    public void DecodeChunkSize_BelowMinimum_Throws()
+    {
+        using var reader = new XisfReader(new MemoryStream());
+
+        Should.Throw<ArgumentOutOfRangeException>(() => reader.DecodeChunkSize = BlockDecodeOptions.MinimumChunkSize - 1);
+    }
+
+    [TestMethod]
     public void DecodeMemoryLimit_Negative_Throws()
     {
         using var reader = new XisfReader(new MemoryStream());

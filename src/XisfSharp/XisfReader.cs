@@ -49,7 +49,7 @@ public sealed class XisfReader : IDisposable, IAsyncDisposable
     public Action<string, Exception?>? LogHandler { get; set; }
 
     /// <summary>
-    /// Gets or sets the memory, in bytes, that decoding a byte-shuffled LZ4 image may use. The default is 1 GiB.
+    /// Gets or sets the memory, in bytes, that decoding an LZ4 image may use. The default is 1 GiB.
     /// </summary>
     /// <remarks>
     /// LZ4 subblocks can only be decoded whole, and reversing byte shuffling reads several subblocks at once.
@@ -63,6 +63,24 @@ public sealed class XisfReader : IDisposable, IAsyncDisposable
         {
             ArgumentOutOfRangeException.ThrowIfNegative(value);
             DecodeOptions = DecodeOptions with { LaneMemoryLimit = value };
+        }
+    }
+
+    /// <summary>
+    /// Gets or sets how many bytes a stream from <see cref="OpenImageDataAsync(int, CancellationToken)"/> decodes at a time.
+    /// The default is 4 MiB.
+    /// </summary>
+    /// <remarks>
+    /// A stream holds two chunks while it's open, so lower this when many images are streamed at once. Uncompressed
+    /// data read in pieces of at least this size goes straight to the caller's buffer, and holds no chunks.
+    /// </remarks>
+    public int DecodeChunkSize
+    {
+        get => DecodeOptions.ChunkSize;
+        set
+        {
+            ArgumentOutOfRangeException.ThrowIfLessThan(value, BlockDecodeOptions.MinimumChunkSize);
+            DecodeOptions = DecodeOptions with { ChunkSize = value };
         }
     }
 

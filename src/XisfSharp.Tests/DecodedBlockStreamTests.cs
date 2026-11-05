@@ -142,6 +142,129 @@ public class DecodedBlockStreamTests
     }
 
     [TestMethod]
+    [DataRow(4, CompressionCodec.Lz4)]
+    [DataRow(4, CompressionCodec.Lz4Hc)]
+    [DataRow(1, CompressionCodec.Lz4)]
+    public async Task Open_OneLz4SubblockAboveMemoryLimit_DecodesThroughTempFile(int itemSize, CompressionCodec codec)
+    {
+        byte[] expected = CreateRamp(SampleFormat.Float32, 4096);
+        byte[] uncompressed = itemSize == 1 ? expected : Shuffle(expected, itemSize);
+        var (stored, subblocks) = CompressSubblocks(uncompressed, codec, [uncompressed.Length]);
+
+        var block = AttachedBlock(stored, expected.Length, codec, itemSize, subblocks);
+        var options = new BlockDecodeOptions { ChunkSize = 256, LaneMemoryLimit = uncompressed.Length - 1 };
+
+        await using var decoded = await DecodedBlockStream.OpenAsync(block, SourceWith(stored), AttachmentPosition, options, CancellationToken.None);
+        decoded.UsesTempFile.ShouldBeTrue();
+
+        byte[] actual = new byte[decoded.Length];
+        await decoded.ReadExactlyAsync(actual);
+
+        actual.ShouldBe(expected);
+    }
+
+    [TestMethod]
+    [DataRow(4)]
+    [DataRow(1)]
+    public async Task Open_OneLz4SubblockWithinMemoryLimit_KeepsItInMemory(int itemSize)
+    {
+        byte[] expected = CreateRamp(SampleFormat.Float32, 4096);
+        byte[] uncompressed = itemSize == 1 ? expected : Shuffle(expected, itemSize);
+        var (stored, subblocks) = CompressSubblocks(uncompressed, CompressionCodec.Lz4, [uncompressed.Length]);
+
+        var block = AttachedBlock(stored, expected.Length, CompressionCodec.Lz4, itemSize, subblocks);
+        var options = new BlockDecodeOptions { ChunkSize = 256, LaneMemoryLimit = uncompressed.Length };
+
+        await using var decoded = await DecodedBlockStream.OpenAsync(block, SourceWith(stored), AttachmentPosition, options, CancellationToken.None);
+        decoded.UsesTempFile.ShouldBeFalse();
+
+        byte[] actual = new byte[decoded.Length];
+        await decoded.ReadExactlyAsync(actual);
+
+        actual.ShouldBe(expected);
+    }
+
+    [TestMethod]
+    [DataRow(CompressionCodec.Zstd)]
+    [DataRow(CompressionCodec.Zlib)]
+    public async Task Open_IncrementalCodecsAtZeroMemoryLimit_UseNoTempFile(CompressionCodec codec)
+    {
+        byte[] expected = CreateRamp(SampleFormat.Float32, 4096);
+        var (stored, subblocks) = CompressSubblocks(Shuffle(expected, 4), codec, [8192, 8192]);
+
+        var block = AttachedBlock(stored, expected.Length, codec, itemSize: 4, subblocks);
+        var options = new BlockDecodeOptions { ChunkSize = 256, LaneMemoryLimit = 0 };
+
+        await using var decoded = await DecodedBlockStream.OpenAsync(block, SourceWith(stored), AttachmentPosition, options, CancellationToken.None);
+
+        decoded.UsesTempFile.ShouldBeFalse();
+    }
+
+    [TestMethod]
+    public async Task Read_UncompressedOfAtLeastOneChunk_UsesNoStagingBuffers()
+    {
+        byte[] expected = CreateRamp(SampleFormat.Float32, 4096);
+        var block = AttachedBlock(expected, expected.Length);
+        var options = new BlockDecodeOptions { ChunkSize = 1024 };
+
+        await using var decoded = await DecodedBlockStream.OpenAsync(block, SourceWith(expected), AttachmentPosition, options, CancellationToken.None);
+
+        byte[] actual = new byte[expected.Length];
+        for (int offset = 0; offset < actual.Length; offset += 1024)
+            await decoded.ReadExactlyAsync(actual.AsMemory(offset, 1024));
+
+        decoded.HasStagingBuffers.ShouldBeFalse();
+        decoded.Position.ShouldBe(expected.Length);
+        (await decoded.ReadAsync(new byte[1024])).ShouldBe(0);
+        actual.ShouldBe(expected);
+    }
+
+    [TestMethod]
+    [DataRow(4)]
+    [DataRow(1)]
+    public async Task Read_Compressed_UsesStagingBuffersWhateverTheSize(int itemSize)
+    {
+        byte[] expected = CreateRamp(SampleFormat.Float32, 4096);
+        byte[] uncompressed = itemSize == 1 ? expected : Shuffle(expected, itemSize);
+        var (stored, subblocks) = CompressSubblocks(uncompressed, CompressionCodec.Zstd, [uncompressed.Length]);
+        var block = AttachedBlock(stored, expected.Length, CompressionCodec.Zstd, itemSize, subblocks);
+
+        await using var decoded = await DecodedBlockStream.OpenAsync(block, SourceWith(stored), AttachmentPosition, new BlockDecodeOptions { ChunkSize = 1024 }, CancellationToken.None);
+
+        byte[] actual = new byte[expected.Length];
+        await decoded.ReadExactlyAsync(actual);
+
+        decoded.HasStagingBuffers.ShouldBeTrue();
+        actual.ShouldBe(expected);
+    }
+
+    [TestMethod]
+    [DataRow(new[] { 100, 2048, 100, 2048, 5000 })]
+    [DataRow(new[] { 2048, 100, 3000, 1, 2048 })]
+    [DataRow(new[] { 1, 1, 1, 1024, 1024, 1, 4096 })]
+    public async Task Read_UncompressedInMixedSizes_KeepsItsPlace(int[] sizes)
+    {
+        byte[] expected = CreateRamp(SampleFormat.Float32, 4096);
+        var block = AttachedBlock(expected, expected.Length);
+        var options = new BlockDecodeOptions { ChunkSize = 1024 };
+
+        await using var decoded = await DecodedBlockStream.OpenAsync(block, SourceWith(expected), AttachmentPosition, options, CancellationToken.None);
+
+        byte[] actual = new byte[expected.Length];
+        int offset = 0;
+        foreach (int size in sizes)
+        {
+            await decoded.ReadExactlyAsync(actual.AsMemory(offset, size));
+            offset += size;
+        }
+
+        await decoded.ReadExactlyAsync(actual.AsMemory(offset));
+
+        decoded.Position.ShouldBe(expected.Length);
+        actual.ShouldBe(expected);
+    }
+
+    [TestMethod]
     public async Task Open_TempFileIsDeletedOnDispose()
     {
         string directory = Path.Combine(Path.GetTempPath(), $"xisfsharp-test-{Guid.NewGuid():N}");

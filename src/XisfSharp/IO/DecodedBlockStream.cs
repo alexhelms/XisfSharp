@@ -10,7 +10,8 @@ namespace XisfSharp.IO;
 /// <c>i</c> is stored at offset <c>j * itemCount + i</c> of the uncompressed block. The stream reads the block
 /// through one lane per byte of an item, each starting at its own shuffled plane, and interleaves the lanes to
 /// rebuild the items. Unshuffled blocks use a single lane. Lanes decode concurrently, and the next chunk is
-/// decoded in the background while the caller consumes the current one.
+/// decoded in the background while the caller consumes the current one. Stored bytes that need no decoding go
+/// straight to a caller's buffer of at least one chunk, with no staging buffer or read-ahead.
 /// </remarks>
 internal sealed class DecodedBlockStream : Stream
 {
@@ -18,8 +19,8 @@ internal sealed class DecodedBlockStream : Stream
     private readonly SubblockReader? _tailReader;
     private readonly byte[][] _laneBuffers;
     private readonly CancellationTokenSource _readAheadCancellation = new();
-    private byte[] _staging;
-    private byte[] _nextStaging;
+    private byte[]? _staging;
+    private byte[]? _nextStaging;
     private Task<int>? _readAhead;
     private readonly int _itemSize;
     private readonly long _itemCount;
@@ -27,6 +28,7 @@ internal sealed class DecodedBlockStream : Stream
     private readonly int _tailLength;
     private readonly int _elementSize;
     private readonly bool _reverseByteOrder;
+    private readonly bool _canReadDirectly;
     private readonly Stream? _tempFile;
     private readonly long _length;
 
@@ -45,6 +47,7 @@ internal sealed class DecodedBlockStream : Stream
         int chunkSize,
         int elementSize,
         bool reverseByteOrder,
+        bool canReadDirectly,
         Stream? tempFile)
     {
         _lanes = lanes;
@@ -55,12 +58,11 @@ internal sealed class DecodedBlockStream : Stream
         _tailLength = (int)(length % itemSize);
         _elementSize = elementSize;
         _reverseByteOrder = reverseByteOrder;
+        _canReadDirectly = canReadDirectly;
         _tempFile = tempFile;
 
         // A whole number of 8-byte groups per chunk keeps every chunk aligned to any element size.
         _itemsPerChunk = chunkSize / (itemSize * 8) * 8;
-        _staging = ArrayPool<byte>.Shared.Rent(_itemsPerChunk * itemSize);
-        _nextStaging = ArrayPool<byte>.Shared.Rent(_itemsPerChunk * itemSize);
         _laneBuffers = itemSize == 1
             ? []
             : Enumerable.Range(0, itemSize).Select(_ => ArrayPool<byte>.Shared.Rent(_itemsPerChunk)).ToArray();
@@ -70,6 +72,11 @@ internal sealed class DecodedBlockStream : Stream
     /// Gets a value indicating whether the block was decompressed to a temporary file before being unshuffled.
     /// </summary>
     public bool UsesTempFile => _tempFile is not null;
+
+    /// <summary>
+    /// Gets a value indicating whether any read has needed the stream's staging buffers.
+    /// </summary>
+    public bool HasStagingBuffers => _staging is not null;
 
     public override bool CanRead => !_disposed;
 
@@ -153,7 +160,8 @@ internal sealed class DecodedBlockStream : Stream
                 tailReader = await SubblockReader.OpenAsync(positional, sourcePosition, subblocks, codec, lz4Cache, itemCount * itemSize, cancellationToken);
             }
 
-            return new DecodedBlockStream(lanes, tailReader, itemSize, length, options.ChunkSize, elementSize, reverseByteOrder, tempFile);
+            bool canReadDirectly = codec == CompressionCodec.None && itemSize == 1 && !reverseByteOrder;
+            return new DecodedBlockStream(lanes, tailReader, itemSize, length, options.ChunkSize, elementSize, reverseByteOrder, canReadDirectly, tempFile);
         }
         catch
         {
@@ -182,6 +190,12 @@ internal sealed class DecodedBlockStream : Stream
         if (buffer.IsEmpty)
             return 0;
 
+        if (_stagingOffset == _stagingCount && _readAhead is null && _canReadDirectly && buffer.Length >= ChunkBytes)
+            return await ReadDirectlyAsync(buffer, cancellationToken);
+
+        _staging ??= ArrayPool<byte>.Shared.Rent(ChunkBytes);
+        _nextStaging ??= ArrayPool<byte>.Shared.Rent(ChunkBytes);
+
         if (_stagingOffset == _stagingCount)
         {
             int produced;
@@ -194,7 +208,7 @@ internal sealed class DecodedBlockStream : Stream
             }
             else
             {
-                produced = await DecodeChunkAsync(_staging, cancellationToken);
+                produced = await DecodeChunkAsync(_staging!, cancellationToken);
             }
 
             if (produced == 0)
@@ -206,7 +220,7 @@ internal sealed class DecodedBlockStream : Stream
             // Decoding the next chunk while the caller consumes this one overlaps decompression with the caller's work.
             if (HasMoreChunks)
             {
-                var target = _nextStaging;
+                var target = _nextStaging!;
                 var token = _readAheadCancellation.Token;
                 _readAhead = Task.Run(() => DecodeChunkAsync(target, token).AsTask(), token);
             }
@@ -248,8 +262,10 @@ internal sealed class DecodedBlockStream : Stream
             _tailReader?.Dispose();
             _tempFile?.Dispose();
 
-            ArrayPool<byte>.Shared.Return(_staging);
-            ArrayPool<byte>.Shared.Return(_nextStaging);
+            if (_staging is not null)
+                ArrayPool<byte>.Shared.Return(_staging);
+            if (_nextStaging is not null)
+                ArrayPool<byte>.Shared.Return(_nextStaging);
             _readAheadCancellation.Dispose();
             foreach (var laneBuffer in _laneBuffers)
                 ArrayPool<byte>.Shared.Return(laneBuffer);
@@ -258,7 +274,21 @@ internal sealed class DecodedBlockStream : Stream
         base.Dispose(disposing);
     }
 
+    private int ChunkBytes => _itemsPerChunk * _itemSize;
+
     private bool HasMoreChunks => _itemsDecoded < _itemCount || (_tailLength > 0 && !_tailDecoded);
+
+    private async ValueTask<int> ReadDirectlyAsync(Memory<byte> buffer, CancellationToken cancellationToken)
+    {
+        int count = (int)Math.Min(buffer.Length, _length - _position);
+        if (count == 0)
+            return 0;
+
+        await _lanes[0].ReadExactlyAsync(buffer[..count], cancellationToken);
+        _itemsDecoded += count;
+        _position += count;
+        return count;
+    }
 
     private async ValueTask StopReadAheadAsync()
     {
@@ -334,12 +364,13 @@ internal sealed class DecodedBlockStream : Stream
 
     private static bool NeedsTempFile(SubblockTable subblocks, CompressionCodec codec, int itemSize, BlockDecodeOptions options)
     {
-        if (itemSize == 1 || codec is not (CompressionCodec.Lz4 or CompressionCodec.Lz4Hc))
+        if (codec is not (CompressionCodec.Lz4 or CompressionCodec.Lz4Hc))
             return false;
 
-        // Each lane may hold a different decoded subblock; sequential decoding needs only one.
+        // Each lane may hold a different decoded subblock for as long as the stream is open, whereas
+        // decompressing to a file holds one subblock, and only until the stream has opened.
         long laneMemory = Math.Min(itemSize, subblocks.Count) * subblocks.MaxUncompressedSubblockSize;
-        return laneMemory > Math.Max(options.LaneMemoryLimit, subblocks.MaxUncompressedSubblockSize);
+        return laneMemory > options.LaneMemoryLimit;
     }
 
     private static async Task<Stream> DecompressToTempFileAsync(
